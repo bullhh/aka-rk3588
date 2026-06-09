@@ -55,13 +55,14 @@ if(NATIVE_BUILD)
   pkg_check_modules(LIBUVC    REQUIRED libuvc)
   pkg_check_modules(LIBUSB    REQUIRED libusb-1.0)
   pkg_check_modules(LIBJPEG   REQUIRED libturbojpeg)
-  pkg_check_modules(LIBSNDFILE REQUIRED sndfile)
 
   set(LIBJPEG_INCLUDES    ${LIBJPEG_INCLUDE_DIRS})
   set(LIBJPEG             ${LIBJPEG_LIBRARIES})
   set(LIBRGA              "")
-  set(LIBSNDFILE          ${LIBSNDFILE_LIBRARIES})
-  set(LIBSNDFILE_INCLUDES ${LIBSNDFILE_INCLUDE_DIRS})
+  # The tennis binary does not link audioutils, so sndfile is intentionally
+  # optional for board-native builds.
+  set(LIBSNDFILE          "")
+  set(LIBSNDFILE_INCLUDES "")
 
   add_subdirectory(${3RD}/utils utils.out)
 
@@ -79,10 +80,19 @@ if(NATIVE_BUILD)
       tennis.cpp
       test_cmds.cpp
       arm/arm.cpp
+      feetech/feetech_bus.cpp
       motor/motor.cpp motor/pwm_motor_driver.cpp motor/uart_motor_driver.cpp
+      robot/omni_base.cpp robot/feetech_arm.cpp robot/lekiwi_calibration.cpp robot/lekiwi_arm_poses.cpp
+      robot/lekiwi_task_controller.cpp
       capture/uvc_capture.cpp
       detect/detect.cpp
       ${RKNPU2_SRC}
+  )
+
+  target_link_directories(tennis PRIVATE
+      ${LIBUVC_LIBRARY_DIRS}
+      ${LIBUSB_LIBRARY_DIRS}
+      ${LIBJPEG_LIBRARY_DIRS}
   )
 
   # Use the bundled librknnrt.so (newer than what's installed on the board)
@@ -106,8 +116,8 @@ else()
   # ── Cross-compile on PC ────────────────────────────────────────────────────
   set(LIBJPEG_DIR       ${3RD}/jpeg_turbo)
   set(LIBJPEG_INCLUDES  ${LIBJPEG_DIR}/include)
-  set(LIBJPEG           ${LIBJPEG_DIR}/Linux/aarch64/libturbojpeg.a)
-  set(LIBRGA            ${3RD}/librga/Linux/aarch64/librga.so)
+  set(LIBJPEG           "")
+  set(LIBRGA            "")
   set(LIBSNDFILE        "")
   set(LIBSNDFILE_INCLUDES "")
 
@@ -126,7 +136,10 @@ else()
       tennis.cpp
       test_cmds.cpp
       arm/arm.cpp
+      feetech/feetech_bus.cpp
       motor/motor.cpp motor/pwm_motor_driver.cpp motor/uart_motor_driver.cpp
+      robot/omni_base.cpp robot/feetech_arm.cpp robot/lekiwi_calibration.cpp robot/lekiwi_arm_poses.cpp
+      robot/lekiwi_task_controller.cpp
       capture/uvc_capture.cpp
       detect/detect.cpp
       ${RKNPU2_SRC}

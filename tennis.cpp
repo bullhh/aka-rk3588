@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <algorithm>
 #include <vector>
+#include <utility>
 
 #include <turbojpeg.h>
 
@@ -27,6 +28,10 @@
 #include "detect/detect.hpp"
 #include "test_cmds.hpp"
 #include "arm/arm.hpp"
+#include "feetech/feetech_bus.hpp"
+#include "robot/omni_base.hpp"
+#include "robot/feetech_arm.hpp"
+#include "robot/lekiwi_task_controller.hpp"
 
 // ── Build-time tunables ───────────────────────────────────────────────────────
 #define ENABLE_SAVE_IMAGE 0
@@ -98,10 +103,21 @@ enum class GameState {
     FIND_BUCKET,     // 旋转搜索红色桶
     APPROACH_BUCKET, // 趋近桶
     DEPOSIT,         // 放球（blocking，单次），完成后回到 CHASE_BALL
+    PICK_BALL,       // LeKiwi: IK/P 控制夹球
+    PUT_BALL,        // LeKiwi: IK/P 控制放球
+};
+
+class DriveAdapter {
+public:
+    virtual ~DriveAdapter() = default;
+    virtual void drive(int left_speed, int right_speed) = 0;
+    virtual void brake() = 0;
+    virtual void standby() = 0;
 };
 
 // ── Globals for signal handler ────────────────────────────────────────────────
 static Motor*              g_motor      = nullptr;
+static DriveAdapter*       g_drive      = nullptr;
 static UvcCapture*         g_capture    = nullptr;
 static rknn_app_context_t* g_rknn_ctx   = nullptr;
 static Arm*                g_arm        = nullptr;
@@ -109,7 +125,8 @@ static int                 g_saved_stderr = -1;
 static int                 g_devnull    = -1;
 
 static void cleanup_and_exit() {
-    if (g_motor)    g_motor->standby();
+    if (g_drive)    g_drive->standby();
+    else if (g_motor) g_motor->standby();
     if (g_capture)  g_capture->close();
     if (g_rknn_ctx) detect_deinit(g_rknn_ctx);
     if (g_saved_stderr >= 0 && g_devnull >= 0)
@@ -187,14 +204,70 @@ static int base_speed(float area_ratio) {
 // ── Usage ─────────────────────────────────────────────────────────────────────
 static void usage(const char* prog) {
     LOGI("Usage:");
-    LOGI("  %s <model.rknn> [uart_dev] [uvc_device_index] [arm_dev]", prog);
-    LOGI("  Example: %s tennis.rknn /dev/ttyS3 0 /dev/ttyUSB1", prog);
+    LOGI("  %s <model.rknn> [uart_dev] [uvc_device_index] [arm_dev] [platform]", prog);
+    LOGI("  Example legacy: %s tennis.rknn /dev/ttyS3 0 /dev/ttyUSB1", prog);
+    LOGI("  Example lekiwi: %s tennis.rknn /dev/ttyACM0 0 /dev/ttyACM0 lekiwi", prog);
     LOGI("  %s test-uvc   [uvc_index]               -- capture one frame -> capture.jpg", prog);
     LOGI("  %s test-yolo  <model.rknn> [uvc_index]  -- detect one frame  -> result.jpg", prog);
     LOGI("  %s test-motor [uart_dev] [speed=N]       -- motor test", prog);
     LOGI("  %s test-arm   [uart_dev] <cmd|a0 a1 a2>  -- arm servo test (default /dev/ttyUSB1)", prog);
     LOGI("  %s test-bucket [uvc_index]               -- red bucket detect -> bucket.jpg", prog);
+    LOGI("  %s test-feetech [uart_dev] <scan|read|torque-off> -- STS3215 bus test", prog);
+    LOGI("  %s test-base [uart_dev] <forward|backward|left|right|rotate-left|rotate-right|stop> [level]", prog);
+    LOGI("  %s test-new-arm [uart_dev] <calibrate|calib-check|pos|grab|release|show|torque-off|set name deg|raw name value>", prog);
 }
+
+class LegacyDriveAdapter : public DriveAdapter {
+public:
+    explicit LegacyDriveAdapter(Motor& motor) : motor_(motor) {}
+    void drive(int left_speed, int right_speed) override { motor_.drive(left_speed, right_speed); }
+    void brake() override { motor_.brake(); }
+    void standby() override { motor_.standby(); }
+private:
+    Motor& motor_;
+};
+
+class OmniDriveAdapter : public DriveAdapter {
+public:
+    explicit OmniDriveAdapter(OmniBase& base) : base_(base) {}
+    void drive(int left_speed, int right_speed) override {
+        float x = ((left_speed + right_speed) * 0.5f) / 100.0f * 0.12f;
+        float turn = (right_speed - left_speed) / 100.0f * 35.0f;
+        base_.drive_body(x, 0.0f, turn);
+    }
+    void brake() override { base_.stop(); }
+    void standby() override { base_.stop(); }
+private:
+    OmniBase& base_;
+};
+
+class ArmAdapter {
+public:
+    virtual ~ArmAdapter() = default;
+    virtual void grab_pos() = 0;
+    virtual void grab() = 0;
+    virtual void release() = 0;
+};
+
+class LegacyArmAdapter : public ArmAdapter {
+public:
+    explicit LegacyArmAdapter(Arm& arm) : arm_(arm) {}
+    void grab_pos() override { arm_.grab_pos(); }
+    void grab() override { arm_.grab(); }
+    void release() override { arm_.release(); }
+private:
+    Arm& arm_;
+};
+
+class FeetechArmAdapter : public ArmAdapter {
+public:
+    explicit FeetechArmAdapter(FeetechArm& arm) : arm_(arm) {}
+    void grab_pos() override { arm_.grab_pos(); }
+    void grab() override { arm_.grab(); }
+    void release() override { arm_.release(); }
+private:
+    FeetechArm& arm_;
+};
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv)
@@ -222,25 +295,77 @@ int main(int argc, char** argv)
         int idx = (argc >= 3) ? atoi(argv[2]) : 0;
         return cmd_test_bucket(idx);
     }
+    if (strcmp(argv[1], "test-feetech") == 0) {
+        const char* dev = (argc >= 3) ? argv[2] : "/dev/ttyACM0";
+        return cmd_test_feetech(dev, argc, argv);
+    }
+    if (strcmp(argv[1], "test-base") == 0) {
+        const char* dev = (argc >= 3) ? argv[2] : "/dev/ttyACM0";
+        return cmd_test_base(dev, argc, argv);
+    }
+    if (strcmp(argv[1], "test-new-arm") == 0) {
+        const char* dev = (argc >= 3) ? argv[2] : "/dev/ttyACM0";
+        return cmd_test_new_arm(dev, argc, argv);
+    }
 
     const char* model_path = argv[1];
     const char* uart_dev   = (argc >= 3) ? argv[2] : "/dev/ttyS3";
     int         uvc_index  = (argc >= 4) ? atoi(argv[3]) : 0;
     const char* arm_dev    = (argc >= 5) ? argv[4] : "/dev/ttyUSB1";
+    const char* platform   = (argc >= 6) ? argv[5] : "legacy";
+    bool use_lekiwi = (strcmp(platform, "lekiwi") == 0 || strcmp(platform, "omni") == 0);
+    const int stop_center_offset = use_lekiwi ? 0 : STOP_CENTER_OFFSET;
 
     signal(SIGINT,  signal_handler);
     signal(SIGTERM, signal_handler);
 
-    Motor motor(MotorDriverType::UART, uart_dev);
-    g_motor = &motor;
-    // 最小可动速度，低于此值电机转不动。换车时通过 test-motor 测试后在此修改
-    motor.set_min_speed(15);
-    LOGI("Motor initialized (UART %s)  min_speed=%d", uart_dev, motor.get_min_speed());
+    Motor* motor_ptr = nullptr;
+    Arm* legacy_arm_ptr = nullptr;
+    feetech::FeetechBus* ft_bus_ptr = nullptr;
+    OmniBase* omni_base_ptr = nullptr;
+    FeetechArm* ft_arm_ptr = nullptr;
+    DriveAdapter* drive_ptr = nullptr;
+    ArmAdapter* arm_ptr = nullptr;
 
-    Arm arm(arm_dev);
-    g_arm = &arm;
-    arm.grab_pos();  // 归位到初始姿势
-    LOGI("Arm initialized (%s)", arm_dev);
+    if (use_lekiwi) {
+        ft_bus_ptr = new feetech::FeetechBus(uart_dev, 1000000);
+        if (!ft_bus_ptr->open()) {
+            LOGE("Failed to open Feetech bus %s: %s", uart_dev, ft_bus_ptr->last_error().c_str());
+            return 1;
+        }
+        omni_base_ptr = new OmniBase(*ft_bus_ptr);
+        ft_arm_ptr = new FeetechArm(*ft_bus_ptr);
+        if (!ft_arm_ptr->has_calibration()) {
+            LOGE("Missing/invalid LeKiwi calibration: %s", ft_arm_ptr->calibration_error().c_str());
+            return 1;
+        }
+        if (!omni_base_ptr->configure()) {
+            LOGE("Failed to configure omni base: %s", ft_bus_ptr->last_error().c_str());
+            return 1;
+        }
+        if (!ft_arm_ptr->configure()) {
+            LOGE("Failed to configure Feetech arm: %s", ft_bus_ptr->last_error().c_str());
+            return 1;
+        }
+        drive_ptr = new OmniDriveAdapter(*omni_base_ptr);
+        arm_ptr = new FeetechArmAdapter(*ft_arm_ptr);
+        g_drive = drive_ptr;
+        arm_ptr->grab_pos();
+        LOGI("LeKiwi platform initialized (Feetech %s)", uart_dev);
+    } else {
+        motor_ptr = new Motor(MotorDriverType::UART, uart_dev);
+        g_motor = motor_ptr;
+        motor_ptr->set_min_speed(15);
+        drive_ptr = new LegacyDriveAdapter(*motor_ptr);
+        g_drive = drive_ptr;
+        LOGI("Motor initialized (UART %s)  min_speed=%d", uart_dev, motor_ptr->get_min_speed());
+
+        legacy_arm_ptr = new Arm(arm_dev);
+        g_arm = legacy_arm_ptr;
+        arm_ptr = new LegacyArmAdapter(*legacy_arm_ptr);
+        arm_ptr->grab_pos();
+        LOGI("Arm initialized (%s)", arm_dev);
+    }
 
     UvcCapture capture;
     g_capture = &capture;
@@ -298,6 +423,26 @@ int main(int argc, char** argv)
     GameState game_state = GameState::CHASE_BALL;
     int  bucket_lost_cnt  = 0;   // 连续找不到桶的帧数
     int  bucket_confirm   = 0;   // 连续看到桶的帧数（防抖）
+    int  lekiwi_hold_lost_cnt = 0; // LeKiwi 夹球后夹爪反馈连续丢失计数
+    LeKiwiMoveController lekiwi_move(FRAME_WIDTH, FRAME_HEIGHT);
+    LeKiwiArmController* lekiwi_arm_ctrl = use_lekiwi ? new LeKiwiArmController(*ft_arm_ptr) : nullptr;
+    int lekiwi_arm_log_tick = 0;
+    LeKiwiPickConfig lekiwi_pick_base_config;
+    lekiwi_pick_base_config.load();
+    std::vector<std::pair<float, float>> lekiwi_pick_retry_offsets = {
+        {0.0f, 0.0f},
+        {-0.005f, 0.0f},
+        {-0.010f, 0.0f},
+        {-0.015f, 0.0f},
+        {-0.020f, 0.0f},
+        {0.010f, 0.0f},
+        {0.0f, -0.010f},
+        {0.0f, 0.010f},
+        {-0.015f, -0.010f},
+        {-0.015f, 0.010f},
+    };
+    size_t lekiwi_pick_retry_index = 0;
+    LeKiwiPickConfig lekiwi_pick_attempt_config = lekiwi_pick_base_config;
 
     // ── Chase loop ────────────────────────────────────────────────────────────
     while (true) {
@@ -326,6 +471,151 @@ int main(int argc, char** argv)
                          &lb_x, &lb_y, &lb_sc, &th, &td, &tc) != 0) continue;
         t_decode_acc += th + td + tc;
 
+        if (use_lekiwi && game_state == GameState::PICK_BALL) {
+            drive_ptr->standby();
+            if (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->active() &&
+                !lekiwi_arm_ctrl->done() && !lekiwi_arm_ctrl->failed()) {
+                lekiwi_pick_attempt_config = lekiwi_pick_base_config;
+                if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets.size()) {
+                    float dx = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].first;
+                    float dy = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].second;
+                    lekiwi_pick_attempt_config.pre_grab_x += dx;
+                    lekiwi_pick_attempt_config.grab_x += dx;
+                    lekiwi_pick_attempt_config.pre_grab_y += dy;
+                    lekiwi_pick_attempt_config.grab_y += dy;
+                }
+                lekiwi_arm_ctrl->begin_pick(lekiwi_pick_attempt_config);
+                dup2(g_saved_stderr, STDERR_FILENO);
+                float log_dx = 0.0f, log_dy = 0.0f;
+                if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets.size()) {
+                    log_dx = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].first;
+                    log_dy = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].second;
+                }
+                printf("[GAME] PICK_BALL start IK catch sequence attempt=%zu/%zu offset=(%.4f, %.4f) grab=(%.4f, %.4f)\n",
+                       lekiwi_pick_retry_index + 1,
+                       lekiwi_pick_retry_offsets.size(),
+                       log_dx,
+                       log_dy,
+                       lekiwi_pick_attempt_config.grab_x,
+                       lekiwi_pick_attempt_config.grab_y);
+                dup2(g_devnull, STDERR_FILENO);
+            }
+
+            if (!lekiwi_arm_ctrl || !lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[GAME] PICK_BALL controller failed -> CHASE_BALL\n");
+                dup2(g_devnull, STDERR_FILENO);
+                if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
+                lekiwi_move.reset();
+                game_state = GameState::CHASE_BALL;
+                continue;
+            }
+
+            if (lekiwi_arm_ctrl && (++lekiwi_arm_log_tick % 10) == 0) {
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[GAME] PICK_BALL step=%zu/%zu %s\n",
+                       lekiwi_arm_ctrl->step_index() + 1,
+                       lekiwi_arm_ctrl->step_count(),
+                       lekiwi_arm_ctrl->current_step_label());
+                dup2(g_devnull, STDERR_FILENO);
+            }
+
+            if (lekiwi_arm_ctrl->done()) {
+                float gripper_pos = 0.0f;
+                bool holding = lekiwi_arm_ctrl->verify_grab(&gripper_pos);
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[GAME] PICK_BALL done gripper=%.1f holding=%s\n",
+                       gripper_pos, holding ? "yes" : "no");
+                dup2(g_devnull, STDERR_FILENO);
+                lekiwi_arm_ctrl->reset();
+                lekiwi_arm_log_tick = 0;
+                lekiwi_move.reset();
+                if (holding) {
+                    if (lekiwi_pick_retry_index > 0) {
+                        lekiwi_pick_attempt_config.save();
+                        lekiwi_pick_base_config = lekiwi_pick_attempt_config;
+                        dup2(g_saved_stderr, STDERR_FILENO);
+                        printf("[GAME] saved successful pick config grab=(%.4f, %.4f)\n",
+                               lekiwi_pick_base_config.grab_x,
+                               lekiwi_pick_base_config.grab_y);
+                        dup2(g_devnull, STDERR_FILENO);
+                    }
+                    lekiwi_pick_retry_index = 0;
+                    lekiwi_hold_lost_cnt = 0;
+                    game_state = GameState::FIND_BUCKET;
+                    bucket_lost_cnt = 0;
+                    bucket_confirm = 0;
+                    printf("[GAME] -> FIND_BUCKET\n");
+                } else {
+                    lekiwi_pick_retry_index++;
+                    if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets.size()) {
+                        game_state = GameState::CHASE_BALL;
+                        lekiwi_move.reset();
+                        last_seen_frame = -999;
+                        dup2(g_saved_stderr, STDERR_FILENO);
+                        printf("[GAME] grab failed -> CHASE_BALL for visual realign, next pick attempt=%zu/%zu\n",
+                               lekiwi_pick_retry_index + 1,
+                               lekiwi_pick_retry_offsets.size());
+                        dup2(g_devnull, STDERR_FILENO);
+                    } else {
+                        lekiwi_pick_retry_index = 0;
+                        game_state = GameState::CHASE_BALL;
+                        printf("[GAME] grab failed all attempts -> CHASE_BALL\n");
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (use_lekiwi && game_state == GameState::PUT_BALL) {
+            drive_ptr->standby();
+            if (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->active() &&
+                !lekiwi_arm_ctrl->done() && !lekiwi_arm_ctrl->failed()) {
+                lekiwi_arm_ctrl->begin_put();
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[GAME] PUT_BALL start IK put sequence\n");
+                dup2(g_devnull, STDERR_FILENO);
+            }
+
+            if (!lekiwi_arm_ctrl || !lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[GAME] PUT_BALL controller failed -> CHASE_BALL\n");
+                dup2(g_devnull, STDERR_FILENO);
+                if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
+                lekiwi_move.reset();
+                game_state = GameState::CHASE_BALL;
+                continue;
+            }
+
+            if (lekiwi_arm_ctrl && (++lekiwi_arm_log_tick % 10) == 0) {
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[GAME] PUT_BALL step=%zu/%zu %s\n",
+                       lekiwi_arm_ctrl->step_index() + 1,
+                       lekiwi_arm_ctrl->step_count(),
+                       lekiwi_arm_ctrl->current_step_label());
+                dup2(g_devnull, STDERR_FILENO);
+            }
+
+            if (lekiwi_arm_ctrl->done()) {
+                if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
+                lekiwi_arm_log_tick = 0;
+                lekiwi_move.reset();
+                stopped = false;
+                stop_confirm_cnt = 0;
+                align_cnt = 0;
+                align_off_head = 0;
+                last_seen_frame = -999;
+                bucket_lost_cnt = 0;
+                bucket_confirm = 0;
+                lekiwi_hold_lost_cnt = 0;
+                game_state = GameState::CHASE_BALL;
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[GAME] PUT_BALL done -> CHASE_BALL\n");
+                dup2(g_devnull, STDERR_FILENO);
+            }
+            continue;
+        }
+
         // ── 桶的状态机（FIND_BUCKET / APPROACH_BUCKET / DEPOSIT / DONE）────────
         // 这几个状态不需要 YOLO，直接用 HSV 识别桶后跳过后续逻辑
         if (game_state == GameState::FIND_BUCKET ||
@@ -337,14 +627,40 @@ int main(int argc, char** argv)
             decode_mjpeg(mjpeg_buf, jpeg_len, bucket_rgb,
                          FRAME_WIDTH, FRAME_HEIGHT, nullptr, nullptr, nullptr);
 
+            if (use_lekiwi &&
+                (game_state == GameState::FIND_BUCKET ||
+                 game_state == GameState::APPROACH_BUCKET)) {
+                float gripper_pos = 0.0f;
+                bool holding = lekiwi_arm_ctrl && lekiwi_arm_ctrl->verify_grab(&gripper_pos);
+                if (!holding) {
+                    lekiwi_hold_lost_cnt++;
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] hold check lost %d/5 gripper=%.1f\n",
+                           lekiwi_hold_lost_cnt, gripper_pos);
+                    dup2(g_devnull, STDERR_FILENO);
+                    if (lekiwi_hold_lost_cnt >= 5) {
+                        drive_ptr->standby();
+                        lekiwi_move.reset();
+                        if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
+                        game_state = GameState::CHASE_BALL;
+                        dup2(g_saved_stderr, STDERR_FILENO);
+                        printf("[GAME] lost ball before bucket confirmed -> CHASE_BALL\n");
+                        dup2(g_devnull, STDERR_FILENO);
+                        continue;
+                    }
+                } else {
+                    lekiwi_hold_lost_cnt = 0;
+                }
+            }
+
             if (game_state == GameState::DEPOSIT) {
-                motor.standby();
+                drive_ptr->standby();
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[GAME] DEPOSIT – releasing ball...\n");
                 dup2(g_devnull, STDERR_FILENO);
-                if (g_arm) g_arm->release();
+                if (arm_ptr) arm_ptr->release();
                 usleep(500000);
-                if (g_arm) g_arm->grab_pos();
+                if (arm_ptr) arm_ptr->grab_pos();
                 // ── 重置，继续找下一个球 ──────────────────────────────────
                 game_state       = GameState::CHASE_BALL;
                 stopped          = false;
@@ -361,9 +677,32 @@ int main(int argc, char** argv)
             }
 
             // FIND_BUCKET / APPROACH_BUCKET: run HSV detection
-            BucketResult br;
+            BucketResult br{};
             bool bucket_visible = detect_bucket_frame(bucket_rgb,
                                                       FRAME_WIDTH, FRAME_HEIGHT, br);
+
+            if (use_lekiwi) {
+                auto cmd = lekiwi_move.update_bucket(bucket_visible, br.cx, br.w, br.h);
+                if (cmd.idle) drive_ptr->standby();
+                else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
+
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d size=%d/%d L=%d R=%d stable=%d\n",
+                       bucket_visible ? 1 : 0, cmd.label, br.cx, br.w, br.h,
+                       cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
+                dup2(g_devnull, STDERR_FILENO);
+
+                if (cmd.reached) {
+                    drive_ptr->standby();
+                    game_state = GameState::PUT_BALL;
+                    if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
+                    lekiwi_move.reset();
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] -> PUT_BALL\n");
+                    dup2(g_devnull, STDERR_FILENO);
+                }
+                continue;
+            }
 
             if (game_state == GameState::FIND_BUCKET) {
                 if (bucket_visible) {
@@ -376,13 +715,13 @@ int main(int argc, char** argv)
                         printf("[GAME] -> APPROACH_BUCKET  area=%.3f\n", br.area_ratio);
                         dup2(g_devnull, STDERR_FILENO);
                     } else {
-                        motor.standby(); // 稳住等确认
+                        drive_ptr->standby(); // 稳住等确认
                     }
                 } else {
                     bucket_confirm = 0;
                     bucket_lost_cnt++;
                     // 旋转搜索（始终向右转，可根据场地调整）
-                    motor.drive(BUCKET_SEARCH_SPD, -BUCKET_SEARCH_SPD);
+                    drive_ptr->drive(BUCKET_SEARCH_SPD, -BUCKET_SEARCH_SPD);
                     dup2(g_saved_stderr, STDERR_FILENO);
                     printf("[GAME] FIND_BUCKET searching... lost=%d\n", bucket_lost_cnt);
                     dup2(g_devnull, STDERR_FILENO);
@@ -400,7 +739,7 @@ int main(int argc, char** argv)
                     printf("[GAME] APPROACH_BUCKET lost bucket -> FIND_BUCKET\n");
                     dup2(g_devnull, STDERR_FILENO);
                 } else {
-                    motor.standby(); // 短暂丢失时停车等
+                    drive_ptr->standby(); // 短暂丢失时停车等
                 }
                 continue;
             }
@@ -410,9 +749,9 @@ int main(int argc, char** argv)
                 // 足够近 → 制动停车，进入放球
                 struct timeval tb2; gettimeofday(&tb2, nullptr);
                 while (elapsed_us(tb2) < BRAKE_PULSE_US) {
-                    motor.brake(); usleep(20000);
+                    drive_ptr->brake(); usleep(20000);
                 }
-                motor.standby();
+                drive_ptr->standby();
                 game_state = GameState::DEPOSIT;
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[GAME] -> DEPOSIT  bucket area=%.3f\n", br.area_ratio);
@@ -431,7 +770,7 @@ int main(int argc, char** argv)
                          ? BUCKET_BRAKE_SPD : BUCKET_APPROACH_SPD;
             int bk_l = std::max(-100, std::min(100, bk_spd + bk_bias));
             int bk_r = std::max(-100, std::min(100, bk_spd - bk_bias));
-            motor.drive(bk_l, bk_r);
+            drive_ptr->drive(bk_l, bk_r);
 
             dup2(g_saved_stderr, STDERR_FILENO);
             printf("[GAME] APPROACH_BUCKET  area=%.3f off=%d  L=%d R=%d\n",
@@ -470,6 +809,35 @@ int main(int argc, char** argv)
 
             int spd  = base_speed(area_ratio);
 
+            if (use_lekiwi) {
+                auto cmd = lekiwi_move.update_ball(dets);
+                if (cmd.idle) drive_ptr->standby();
+                else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
+
+                dup2(g_saved_stderr, STDERR_FILENO);
+                long frame_us = elapsed_us(t_start);
+                printf("[STATE] LEKIWI_CHASE label=%s area=%.3f off=%3d size=%3d L=%3d R=%3d ready=%d fps=%.1f\n",
+                       cmd.label, area_ratio, offset, (int)std::max(b.w, b.h),
+                       cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0,
+                       1e6f / frame_us);
+                dup2(g_devnull, STDERR_FILENO);
+
+                if (cmd.reached) {
+                    drive_ptr->standby();
+                    game_state = GameState::PICK_BALL;
+                    if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
+                    lekiwi_move.reset();
+                    lekiwi_pick_base_config.load();
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] -> PICK_BALL attempt=%zu/%zu\n",
+                           lekiwi_pick_retry_index + 1,
+                           lekiwi_pick_retry_offsets.size());
+                    dup2(g_devnull, STDERR_FILENO);
+                }
+                t_ctrl_acc += elapsed_us(t_stage);
+                continue;
+            }
+
             // ── 区域标签（用于日志）───────────────────────────────────────────
             const char* zone = (area_ratio >= AREA_REVERSE) ? "REVERSE" :
                                (area_ratio >= AREA_STOP)    ? "STOP"    :
@@ -494,7 +862,7 @@ int main(int argc, char** argv)
                     printf("[STATE] RESUME  area=%.3f zone=%s\n", area_ratio, zone);
                     dup2(g_devnull, STDERR_FILENO);
                 } else {
-                    motor.standby();
+                    drive_ptr->standby();
                     t_ctrl_acc += elapsed_us(t_stage);
                     continue;
                 }
@@ -508,7 +876,7 @@ int main(int argc, char** argv)
                 int rev_right = (offset > CENTER_DEAD_ZONE)  ? -REVERSE_SPEED - 5 :
                                 (offset < -CENTER_DEAD_ZONE) ? -REVERSE_SPEED + 5 :
                                 -REVERSE_SPEED;
-                motor.drive(rev_left, rev_right);
+                drive_ptr->drive(rev_left, rev_right);
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[STATE] REVERSE  area=%.3f off=%d  L=%d R=%d\n",
                        area_ratio, offset, rev_left, rev_right);
@@ -518,7 +886,7 @@ int main(int argc, char** argv)
             }
 
             // ── Stop condition: close enough AND at target offset, confirm N frames ───
-            int stop_off = offset - STOP_CENTER_OFFSET;  // 目标：球在中心偏右
+            int stop_off = offset - stop_center_offset;
             if (area_ratio >= AREA_STOP && abs(stop_off) <= STOP_CENTER_ZONE) {
                 stop_confirm_cnt++;
                 align_cnt = 0;
@@ -530,16 +898,16 @@ int main(int argc, char** argv)
                     dup2(g_devnull, STDERR_FILENO);
                     struct timeval tb; gettimeofday(&tb, nullptr);
                     while (elapsed_us(tb) < BRAKE_PULSE_US) {
-                        motor.brake();
+                        drive_ptr->brake();
                         usleep(20000);
                     }
-                    motor.standby();
+                    drive_ptr->standby();
                     stopped = true;
                     dup2(g_saved_stderr, STDERR_FILENO);
                     printf("[STATE] STOPPED  area=%.3f  -> GRAB\n", area_ratio);
                     dup2(g_devnull, STDERR_FILENO);
                     // ── 执行抓球 ──────────────────────────────────────────────
-                    if (g_arm) g_arm->grab();
+                    if (arm_ptr) arm_ptr->grab();
                     // ── 切换到找桶状态 ────────────────────────────────────────
                     game_state    = GameState::FIND_BUCKET;
                     bucket_lost_cnt = 0;
@@ -548,7 +916,7 @@ int main(int argc, char** argv)
                     printf("[GAME] -> FIND_BUCKET\n");
                     dup2(g_devnull, STDERR_FILENO);
                 } else {
-                    motor.brake();
+                    drive_ptr->brake();
                 }
                 t_ctrl_acc += elapsed_us(t_stage);
                 continue;
@@ -580,10 +948,10 @@ int main(int argc, char** argv)
                     dup2(g_devnull, STDERR_FILENO);
                     struct timeval tk; gettimeofday(&tk, nullptr);
                     while (elapsed_us(tk) < ALIGN_KICK_US) {
-                        motor.drive(kick, -kick);
+                        drive_ptr->drive(kick, -kick);
                         usleep(20000);
                     }
-                    motor.brake();
+                    drive_ptr->brake();
                     // 重置历史，避免连续踢
                     align_off_head = 0;
                     align_cnt = 0;
@@ -594,7 +962,7 @@ int main(int argc, char** argv)
                 float t = std::min(1.0f, (float)abs(stop_off) / (float)half_w);
                 int pivot_spd = (int)(ALIGN_PIVOT_MIN + t * (ALIGN_PIVOT_SPD - ALIGN_PIVOT_MIN));
                 int pivot = (stop_off > 0) ? pivot_spd : -pivot_spd;
-                motor.drive(pivot, -pivot);
+                drive_ptr->drive(pivot, -pivot);
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[STATE] ALIGN  area=%.3f off=%3d stop_off=%3d  pivot=%d  [%d]\n",
                        area_ratio, offset, stop_off, pivot, align_cnt);
@@ -627,7 +995,7 @@ int main(int argc, char** argv)
                 right_spd = std::max(-100, std::min(100, spd - bias));
             }
 
-            motor.drive(left_spd, right_spd);
+            drive_ptr->drive(left_spd, right_spd);
 
             dup2(g_saved_stderr, STDERR_FILENO);
             long frame_us = elapsed_us(t_start);
@@ -637,11 +1005,22 @@ int main(int argc, char** argv)
             dup2(g_devnull, STDERR_FILENO);
 
         } else {
+            if (use_lekiwi) {
+                auto cmd = lekiwi_move.update_ball(dets);
+                if (cmd.idle) drive_ptr->standby();
+                else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[STATE] LEKIWI_SEARCH label=%s L=%d R=%d\n",
+                       cmd.label, cmd.left_speed, cmd.right_speed);
+                dup2(g_devnull, STDERR_FILENO);
+                t_ctrl_acc += elapsed_us(t_stage);
+                continue;
+            }
             int frames_lost = frame_idx - last_seen_frame;
             if (last_seen_frame >= 0 && frames_lost <= SEARCH_FRAMES) {
                 // 刚丢失：沿最后看到球的方向快速转
                 int pivot = (last_offset >= 0) ? SEARCH_PIVOT_SPD : -SEARCH_PIVOT_SPD;
-                motor.drive(pivot, -pivot);
+                drive_ptr->drive(pivot, -pivot);
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[STATE] SEARCH lost=%d/%d  pivot=%s\n",
                        frames_lost, SEARCH_FRAMES, last_offset >= 0 ? "R" : "L");
@@ -649,7 +1028,7 @@ int main(int argc, char** argv)
             } else {
                 // 长时间丢失：原地慢速旋转扫描，方向每 60 帧反转一次
                 int scan_dir = ((frame_idx / 60) % 2 == 0) ? 1 : -1;
-                motor.drive(scan_dir * SEARCH_PIVOT_SPD, -scan_dir * SEARCH_PIVOT_SPD);
+                drive_ptr->drive(scan_dir * SEARCH_PIVOT_SPD, -scan_dir * SEARCH_PIVOT_SPD);
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[STATE] SCAN  frame=%d  dir=%s\n",
                        frame_idx, scan_dir > 0 ? "R" : "L");

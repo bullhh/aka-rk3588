@@ -1,0 +1,41 @@
+file(REMOVE_RECURSE
+  "CMakeFiles/tennis.dir/3rd/yolov8_src/postprocess.cc.o"
+  "CMakeFiles/tennis.dir/3rd/yolov8_src/postprocess.cc.o.d"
+  "CMakeFiles/tennis.dir/3rd/yolov8_src/rknpu2/yolov8.cc.o"
+  "CMakeFiles/tennis.dir/3rd/yolov8_src/rknpu2/yolov8.cc.o.d"
+  "CMakeFiles/tennis.dir/arm/arm.cpp.o"
+  "CMakeFiles/tennis.dir/arm/arm.cpp.o.d"
+  "CMakeFiles/tennis.dir/capture/uvc_capture.cpp.o"
+  "CMakeFiles/tennis.dir/capture/uvc_capture.cpp.o.d"
+  "CMakeFiles/tennis.dir/detect/detect.cpp.o"
+  "CMakeFiles/tennis.dir/detect/detect.cpp.o.d"
+  "CMakeFiles/tennis.dir/feetech/feetech_bus.cpp.o"
+  "CMakeFiles/tennis.dir/feetech/feetech_bus.cpp.o.d"
+  "CMakeFiles/tennis.dir/motor/motor.cpp.o"
+  "CMakeFiles/tennis.dir/motor/motor.cpp.o.d"
+  "CMakeFiles/tennis.dir/motor/pwm_motor_driver.cpp.o"
+  "CMakeFiles/tennis.dir/motor/pwm_motor_driver.cpp.o.d"
+  "CMakeFiles/tennis.dir/motor/uart_motor_driver.cpp.o"
+  "CMakeFiles/tennis.dir/motor/uart_motor_driver.cpp.o.d"
+  "CMakeFiles/tennis.dir/robot/feetech_arm.cpp.o"
+  "CMakeFiles/tennis.dir/robot/feetech_arm.cpp.o.d"
+  "CMakeFiles/tennis.dir/robot/lekiwi_arm_poses.cpp.o"
+  "CMakeFiles/tennis.dir/robot/lekiwi_arm_poses.cpp.o.d"
+  "CMakeFiles/tennis.dir/robot/lekiwi_calibration.cpp.o"
+  "CMakeFiles/tennis.dir/robot/lekiwi_calibration.cpp.o.d"
+  "CMakeFiles/tennis.dir/robot/lekiwi_task_controller.cpp.o"
+  "CMakeFiles/tennis.dir/robot/lekiwi_task_controller.cpp.o.d"
+  "CMakeFiles/tennis.dir/robot/omni_base.cpp.o"
+  "CMakeFiles/tennis.dir/robot/omni_base.cpp.o.d"
+  "CMakeFiles/tennis.dir/tennis.cpp.o"
+  "CMakeFiles/tennis.dir/tennis.cpp.o.d"
+  "CMakeFiles/tennis.dir/test_cmds.cpp.o"
+  "CMakeFiles/tennis.dir/test_cmds.cpp.o.d"
+  "tennis"
+  "tennis.pdb"
+)
+
+# Per-language clean rules from dependency scanning.
+foreach(lang CXX)
+  include(CMakeFiles/tennis.dir/cmake_clean_${lang}.cmake OPTIONAL)
+endforeach()

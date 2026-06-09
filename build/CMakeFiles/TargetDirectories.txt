@@ -1,0 +1,17 @@
+/home/szy/work/robot/tripod/aka-rk3588/build/CMakeFiles/tennis.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/CMakeFiles/stub_libs.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/CMakeFiles/edit_cache.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/CMakeFiles/rebuild_cache.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/CMakeFiles/list_install_components.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/CMakeFiles/install.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/CMakeFiles/install/local.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/CMakeFiles/install/strip.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/fileutils.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/imagedrawing.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/imageutils.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/edit_cache.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/rebuild_cache.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/list_install_components.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/install.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/install/local.dir
+/home/szy/work/robot/tripod/aka-rk3588/build/utils.out/CMakeFiles/install/strip.dir

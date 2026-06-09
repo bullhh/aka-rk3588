@@ -1,0 +1,5 @@
+# Hashes of file build rules.
+5a3643b8e5d6430b0e7f9e9a59f66526 CMakeFiles/stub_libs
+54209d5616f335a4758dbbe7b0aaf52b libturbojpeg.so
+637af6967bb8c7a065291da2b24acf36 libusb-1.0.so
+5cfc7ec6f6a0f89c130ac0be86c0b33e libuvc.so

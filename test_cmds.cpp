@@ -13,6 +13,8 @@
 #include <dirent.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <thread>
+#include <atomic>
 
 #include <turbojpeg.h>
 
@@ -21,6 +23,12 @@
 #include "detect/detect.hpp"
 #include "motor/motor.hpp"
 #include "arm/arm.hpp"
+#include "feetech/feetech_bus.hpp"
+#include "robot/omni_base.hpp"
+#include "robot/feetech_arm.hpp"
+#include "robot/lekiwi_calibration.hpp"
+#include "robot/lekiwi_arm_poses.hpp"
+#include "robot/lekiwi_task_controller.hpp"
 
 static const int FRAME_WIDTH  = 640;
 static const int FRAME_HEIGHT = 480;
@@ -701,4 +709,424 @@ bool detect_bucket_frame(const uint8_t* rgb, int width, int height,
     out.cx = best->x + best->w / 2;
     out.cy = best->y + best->h / 2;
     return true;
+}
+
+// ── test-feetech ─────────────────────────────────────────────────────────────
+int cmd_test_feetech(const char* uart_dev, int argc, char** argv)
+{
+    const char* cmd = (argc >= 4) ? argv[3] : "scan";
+    printf("=== test-feetech dev=%s cmd=%s ===\n", uart_dev, cmd);
+
+    feetech::FeetechBus bus(uart_dev, 1000000);
+    if (!bus.open()) {
+        printf("open failed: %s\n", bus.last_error().c_str());
+        return 1;
+    }
+
+    if (strcmp(cmd, "scan") == 0) {
+        auto ids = bus.scan(1, 9);
+        printf("found %zu motor(s):", ids.size());
+        for (int id : ids) printf(" %d", id);
+        printf("\n");
+        return ids.empty() ? 1 : 0;
+    }
+
+    if (strcmp(cmd, "read") == 0) {
+        for (int id = 1; id <= 9; id++) {
+            feetech::MotorStatus st;
+            if (bus.read_status(id, st)) {
+                printf("id=%d pos=%d vel=%d voltage=%d temp=%d\n",
+                       id, st.position, st.velocity, st.voltage, st.temperature);
+            } else {
+                printf("id=%d read failed: %s\n", id, bus.last_error().c_str());
+            }
+        }
+        return 0;
+    }
+
+    if (strcmp(cmd, "torque-off") == 0) {
+        bool ok = true;
+        for (int id = 1; id <= 9; id++) ok = bus.enable_torque(id, false) && ok;
+        printf("torque-off %s\n", ok ? "ok" : "failed");
+        return ok ? 0 : 1;
+    }
+
+    printf("Usage: tennis test-feetech [dev] <scan|read|torque-off>\n");
+    return 2;
+}
+
+// ── test-base ────────────────────────────────────────────────────────────────
+int cmd_test_base(const char* uart_dev, int argc, char** argv)
+{
+    const char* cmd = (argc >= 4) ? argv[3] : "stop";
+    int level = (argc >= 5) ? atoi(argv[4]) : 0;
+    int duration_ms = 350;
+
+    printf("=== test-base dev=%s cmd=%s level=%d duration=%dms ===\n",
+           uart_dev, cmd, level, duration_ms);
+
+    feetech::FeetechBus bus(uart_dev, 1000000);
+    if (!bus.open()) {
+        printf("open failed: %s\n", bus.last_error().c_str());
+        return 1;
+    }
+    OmniBase base(bus);
+    if (!base.configure()) {
+        printf("base configure failed: %s\n", bus.last_error().c_str());
+        base.stop();
+        return 1;
+    }
+
+    bool ok = true;
+    if      (strcmp(cmd, "forward") == 0)      ok = base.forward(level);
+    else if (strcmp(cmd, "backward") == 0)     ok = base.backward(level);
+    else if (strcmp(cmd, "left") == 0)         ok = base.left(level);
+    else if (strcmp(cmd, "right") == 0)        ok = base.right(level);
+    else if (strcmp(cmd, "rotate-left") == 0)  ok = base.rotate_left(level);
+    else if (strcmp(cmd, "rotate-right") == 0) ok = base.rotate_right(level);
+    else if (strcmp(cmd, "stop") == 0)         ok = base.stop();
+    else {
+        printf("Usage: tennis test-base [dev] <forward|backward|left|right|rotate-left|rotate-right|stop> [level]\n");
+        base.stop();
+        return 2;
+    }
+
+    if (strcmp(cmd, "stop") != 0) {
+        usleep(duration_ms * 1000);
+        base.stop();
+    }
+    printf("test-base %s\n", ok ? "ok" : bus.last_error().c_str());
+    return ok ? 0 : 1;
+}
+
+static bool _read_pos(feetech::FeetechBus& bus, int id, int& pos) {
+    return bus.read_u16(id, feetech::reg::PRESENT_POSITION, pos, true);
+}
+
+struct JointDef { const char* name; int id; bool full_turn; };
+
+struct RangeRecord {
+    int min = 4095;
+    int max = 0;
+    int raw = 0;
+    bool got = false;
+};
+
+static bool _record_all_ranges_until_enter(feetech::FeetechBus& bus,
+                                           const JointDef* joints,
+                                           int joint_count,
+                                           RangeRecord* ranges)
+{
+    printf("\n一次性校准 1..6 号机械臂电机。\n");
+    printf("请把所有机械臂关节都在安全范围内来回转到两端。\n");
+    printf("程序会同时记录每个电机的 raw/min/max。\n");
+    printf("全部关节都转完后按 ENTER。不要硬顶机械极限。\n\n");
+    fflush(stdout);
+
+    std::atomic<bool> done(false);
+    std::thread waiter([&done]() {
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF) {}
+        done = true;
+    });
+
+    while (!done) {
+        for (int i = 0; i < joint_count; i++) {
+            if (joints[i].full_turn) continue;
+            int pos = 0;
+            if (_read_pos(bus, joints[i].id, pos)) {
+                ranges[i].raw = pos;
+                if (!ranges[i].got) {
+                    ranges[i].min = ranges[i].max = pos;
+                    ranges[i].got = true;
+                }
+                if (pos < ranges[i].min) ranges[i].min = pos;
+                if (pos > ranges[i].max) ranges[i].max = pos;
+            }
+        }
+        printf("\033[6A");
+        for (int i = 0; i < joint_count; i++) {
+            if (joints[i].full_turn) {
+                printf("  id=%d %-18s full-turn range=[0,4095]\n", joints[i].id, joints[i].name);
+            } else {
+                printf("  id=%d %-18s raw=%4d min=%4d max=%4d span=%4d\n",
+                       joints[i].id, joints[i].name, ranges[i].raw,
+                       ranges[i].min, ranges[i].max, ranges[i].max - ranges[i].min);
+            }
+        }
+        fflush(stdout);
+        usleep(70000);
+    }
+    waiter.join();
+    printf("\n");
+
+    bool ok = true;
+    for (int i = 0; i < joint_count; i++) {
+        if (joints[i].full_turn) continue;
+        if (!ranges[i].got || ranges[i].max - ranges[i].min < 20) {
+            printf("  range invalid: id=%d %s min=%d max=%d\n",
+                   joints[i].id, joints[i].name, ranges[i].min, ranges[i].max);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+static int _center_to_homing(int range_min, int range_max) {
+    int center = (range_min + range_max) / 2;
+    return center - 2047;
+}
+
+static const char* kPosePath = "config/lekiwi_arm_poses.txt";
+
+static ArmRawPose _read_current_arm_pose(feetech::FeetechBus& bus) {
+    const char* names[] = {
+        "arm_shoulder_pan",
+        "arm_shoulder_lift",
+        "arm_elbow_flex",
+        "arm_wrist_flex",
+        "arm_wrist_roll",
+        "arm_gripper",
+    };
+    ArmRawPose pose;
+    for (int i = 0; i < 6; i++) {
+        int raw = 0;
+        if (_read_pos(bus, i + 1, raw)) pose.joints[names[i]] = raw;
+    }
+    return pose;
+}
+
+static void _print_pose(const char* name, const ArmRawPose& pose) {
+    printf("[%s]\n", name);
+    for (const auto& kv : pose.joints) {
+        printf("  %-18s %4d\n", kv.first.c_str(), kv.second);
+    }
+}
+
+static int cmd_calibrate_lekiwi_arm(const char* uart_dev) {
+    printf("=== LeKiwi arm calibration dev=%s ===\n", uart_dev);
+    printf("校准方式：一次性转动所有机械臂关节到安全两端，程序自动计算中点作为零位。\n");
+    printf("输出文件：config/lekiwi_calibration.json\n\n");
+
+    feetech::FeetechBus bus(uart_dev, 1000000);
+    if (!bus.open()) {
+        printf("open failed: %s\n", bus.last_error().c_str());
+        return 1;
+    }
+
+    auto ids = bus.scan(1, 9);
+    printf("found %zu motor(s):", ids.size());
+    for (int id : ids) printf(" %d", id);
+    printf("\n");
+    for (int id = 1; id <= 6; id++) {
+        bool found = false;
+        for (int got : ids) if (got == id) found = true;
+        if (!found) {
+            printf("missing required arm motor id=%d\n", id);
+            return 1;
+        }
+    }
+
+    printf("关闭 1..6 号机械臂扭矩...\n");
+    for (int id = 1; id <= 6; id++) bus.enable_torque(id, false);
+
+    JointDef joints[] = {
+        {"arm_shoulder_pan", 1, false},
+        {"arm_shoulder_lift", 2, false},
+        {"arm_elbow_flex", 3, false},
+        {"arm_wrist_flex", 4, false},
+        {"arm_wrist_roll", 5, true},
+        {"arm_gripper", 6, false},
+    };
+    const int joint_count = (int)(sizeof(joints) / sizeof(joints[0]));
+
+    printf("\n当前要记录的机械臂电机：\n");
+    for (int i = 0; i < joint_count; i++) {
+        printf("  id=%d  %s%s\n", joints[i].id, joints[i].name,
+               joints[i].full_turn ? " (continuous/full-turn)" : "");
+    }
+
+    RangeRecord ranges[joint_count];
+    for (int i = 0; i < joint_count; i++) {
+        if (joints[i].full_turn) {
+            ranges[i].got = true;
+            ranges[i].min = 0;
+            ranges[i].max = 4095;
+        }
+    }
+    // Reserve six display lines before the ANSI cursor-up refresh loop.
+    for (int i = 0; i < joint_count; i++) printf("\n");
+    if (!_record_all_ranges_until_enter(bus, joints, joint_count, ranges)) {
+        printf("calibration aborted: invalid range detected\n");
+        return 1;
+    }
+
+    LekiwiCalibration cal;
+    for (int i = 0; i < joint_count; i++) {
+        const auto& j = joints[i];
+        JointCalibration jc;
+        jc.id = j.id;
+        jc.drive_mode = 0;
+        if (j.full_turn) {
+            jc.homing_offset = 0;
+            jc.range_min = 0;
+            jc.range_max = 4095;
+        } else {
+            jc.range_min = ranges[i].min;
+            jc.range_max = ranges[i].max;
+            jc.homing_offset = _center_to_homing(jc.range_min, jc.range_max);
+            int center = (jc.range_min + jc.range_max) / 2;
+            printf("  id=%d %-18s center=%d homing_offset=%d range=[%d,%d]\n",
+                   j.id, j.name, center, jc.homing_offset, jc.range_min, jc.range_max);
+        }
+        cal.set(j.name, jc);
+    }
+
+    cal.set("base_left_wheel",  {7, 0, 0, 0, 4095});
+    cal.set("base_back_wheel",  {8, 0, 0, 0, 4095});
+    cal.set("base_right_wheel", {9, 0, 0, 0, 4095});
+
+    mkdir("config", 0755);
+    const char* out = "config/lekiwi_calibration.json";
+    if (!cal.save(out)) {
+        printf("failed to save %s\n", out);
+        return 1;
+    }
+
+    LekiwiCalibration verify;
+    if (!verify.load(out)) {
+        printf("saved file failed to reload: %s\n", verify.last_error().c_str());
+        return 1;
+    }
+
+    printf("\n校准文件已保存：%s\n", out);
+    printf("校准结束后保持机械臂扭矩关闭。需要动作测试时再运行 test-new-arm pos/set/grab。\n");
+    return 0;
+}
+
+// ── test-new-arm ─────────────────────────────────────────────────────────────
+int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
+{
+    const char* cmd = (argc >= 4) ? argv[3] : "help";
+    printf("=== test-new-arm dev=%s cmd=%s ===\n", uart_dev, cmd);
+
+    auto print_usage = []() {
+        printf("Usage:\n");
+        printf("  tennis test-new-arm [dev] calibrate|calib-check|pos|grab|ik-pick|release|release-pos|show|torque-off\n");
+        printf("  tennis test-new-arm [dev] set <joint_name> <deg>\n");
+        printf("  tennis test-new-arm [dev] raw <joint_name> <raw_0_4095>\n");
+        printf("  tennis test-new-arm [dev] pose-save <name>\n");
+        printf("  tennis test-new-arm [dev] pose-run <name>\n");
+        printf("  tennis test-new-arm [dev] pose-list\n");
+    };
+
+    if (strcmp(cmd, "help") == 0) {
+        print_usage();
+        return 0;
+    }
+
+    if (strcmp(cmd, "calibrate") == 0) {
+        return cmd_calibrate_lekiwi_arm(uart_dev);
+    }
+
+    feetech::FeetechBus bus(uart_dev, 1000000);
+    if (!bus.open()) {
+        printf("open failed: %s\n", bus.last_error().c_str());
+        return 1;
+    }
+
+    if (strcmp(cmd, "pose-save") == 0 && argc >= 5) {
+        LekiwiArmPoses poses;
+        poses.load(kPosePath);
+        ArmRawPose pose = _read_current_arm_pose(bus);
+        if (pose.joints.size() != 6) {
+            printf("failed to read all arm joints\n");
+            return 1;
+        }
+        poses.set(argv[4], pose);
+        mkdir("config", 0755);
+        if (!poses.save(kPosePath)) {
+            printf("failed to save %s\n", kPosePath);
+            return 1;
+        }
+        _print_pose(argv[4], pose);
+        printf("saved to %s\n", kPosePath);
+        return 0;
+    }
+
+    if (strcmp(cmd, "pose-list") == 0) {
+        LekiwiArmPoses poses;
+        if (!poses.load(kPosePath)) {
+            printf("no pose file: %s\n", poses.last_error().c_str());
+            return 1;
+        }
+        auto names = poses.names();
+        printf("poses:");
+        for (const auto& name : names) printf(" %s", name.c_str());
+        printf("\n");
+        return 0;
+    }
+
+    FeetechArm arm(bus);
+    if (strcmp(cmd, "calib-check") == 0) {
+        if (arm.has_calibration()) {
+            printf("calibration ok\n");
+            return 0;
+        }
+        printf("missing/invalid calibration: %s\n", arm.calibration_error().c_str());
+        return 1;
+    }
+    if (!arm.has_calibration()) {
+        printf("missing/invalid calibration: %s\n", arm.calibration_error().c_str());
+        return 1;
+    }
+    if (!arm.configure()) {
+        printf("arm configure failed: %s\n", bus.last_error().c_str());
+        return 1;
+    }
+
+    bool ok = true;
+    if      (strcmp(cmd, "pos") == 0)        ok = arm.grab_pos();
+    else if (strcmp(cmd, "grab") == 0)       ok = arm.grab();
+    else if (strcmp(cmd, "ik-pick") == 0) {
+        LeKiwiArmController ctrl(arm);
+        ok = ctrl.begin_pick();
+        int tick = 0;
+        while (ok && !ctrl.done() && !ctrl.failed() && tick < 600) {
+            ok = ctrl.tick();
+            if ((tick % 10) == 0) {
+                printf("ik-pick step=%zu/%zu %s\n",
+                       ctrl.step_index() + 1,
+                       ctrl.step_count(),
+                       ctrl.current_step_label());
+                fflush(stdout);
+            }
+            usleep(50000);
+            tick++;
+        }
+        float gripper = 0.0f;
+        bool holding = ctrl.verify_grab(&gripper);
+        printf("ik-pick done=%d failed=%d gripper=%.1f holding=%s\n",
+               ctrl.done() ? 1 : 0, ctrl.failed() ? 1 : 0,
+               gripper, holding ? "yes" : "no");
+        ok = ok && ctrl.done() && !ctrl.failed();
+    }
+    else if (strcmp(cmd, "release") == 0)    ok = arm.release();
+    else if (strcmp(cmd, "release-pos") == 0)ok = arm.release_pos();
+    else if (strcmp(cmd, "show") == 0)       ok = arm.show();
+    else if (strcmp(cmd, "torque-off") == 0) ok = arm.stop_torque();
+    else if (strcmp(cmd, "pose-run") == 0 && argc >= 5) ok = arm.run_pose(argv[4], 1000);
+    else if (strcmp(cmd, "set") == 0 && argc >= 6) {
+        ok = arm.set_joint_deg(argv[4], atof(argv[5]));
+        usleep(1000 * 1000);
+    } else if (strcmp(cmd, "raw") == 0 && argc >= 6) {
+        ok = arm.set_joint_raw(argv[4], atoi(argv[5]));
+        usleep(1000 * 1000);
+    } else {
+        print_usage();
+        return 2;
+    }
+
+    printf("test-new-arm %s\n", ok ? "ok" : bus.last_error().c_str());
+    return ok ? 0 : 1;
 }

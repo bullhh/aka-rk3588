@@ -7,6 +7,9 @@ int cmd_test_yolo(const char* model_path, int uvc_index);
 int cmd_test_motor(const char* uart_dev, int argc, char** argv);
 int cmd_test_arm(const char* uart_dev, int argc, char** argv);
 int cmd_test_bucket(int uvc_index);
+int cmd_test_feetech(const char* uart_dev, int argc, char** argv);
+int cmd_test_base(const char* uart_dev, int argc, char** argv);
+int cmd_test_new_arm(const char* uart_dev, int argc, char** argv);
 
 // ── Bucket detection helper for main loop ────────────────────────────────────
 // Runs HSV red detection on an already-decoded RGB frame.
