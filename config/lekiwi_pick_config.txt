@@ -7,10 +7,10 @@
 home_x = 0.0989
 home_y = 0.1250
 
-pre_grab_x = 0.0700
+pre_grab_x = 0.0900
 pre_grab_y = 0.1211
-grab_x = 0.0700
-grab_y = -0.0700
+grab_x = 0.0900
+grab_y = -0.0800
 
 lift_x = -0.1000
 lift_y = 0.2000

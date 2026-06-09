@@ -138,11 +138,7 @@ PICK_BALL -> CHASE_BALL
 
 也就是放弃当前偏移序列，重新从第一组参数开始视觉对准和抓取。
 
-找桶过程中也会持续检查夹爪。如果球掉了，会回到找球：
-
-```text
-FIND_BUCKET -> CHASE_BALL
-```
+抓取完成瞬间会用夹爪反馈判断是否夹住。进入找桶后不再持续复检夹爪，避免夹爪受力或通信瞬时异常导致误判掉球并退出找桶。
 
 ## 投放
 
@@ -189,7 +185,7 @@ LEKIWI_CHASE      追球视觉伺服
 PICK_BALL done    抓取完成并打印 gripper 位置
 grab failed       抓取失败，回到追球
 -> FIND_BUCKET    抓取成功，开始找桶
-lost ball before bucket  找桶前/找桶中球掉落，回到追球
+LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH  视野里没有桶，旋转搜索
 -> PUT_BALL       桶到位，开始投放
 PUT_BALL done     投放完成，回到追球
 ```
@@ -396,7 +392,7 @@ return_shoulder_pan = 0
 ball_target_size
 ```
 
-值越大，车会停得越近；值越小，车会停得越远。当前为 `0` 表示使用默认目标尺寸约 160 像素。
+值越大，车会停得越近；值越小，车会停得越远。当前配置为 `155` 像素。
 
 ### 安全停止
 

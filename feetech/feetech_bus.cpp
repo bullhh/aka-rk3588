@@ -211,7 +211,11 @@ bool FeetechBus::tx_rx(uint8_t id, uint8_t instruction, const std::vector<uint8_
     if (error_out) *error_out = err;
     if (!ok) return false;
     if (err != 0) {
-        set_error("motor returned error status");
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "motor id=%u returned error status 0x%02x for instruction 0x%02x",
+                 id, err, instruction);
+        set_error(msg);
         return false;
     }
     return true;
@@ -310,7 +314,12 @@ bool FeetechBus::set_operating_mode(int id, OperatingMode mode) {
 
 bool FeetechBus::enable_torque(int id, bool enable) {
     bool ok = write_u8(id, reg::TORQUE_ENABLE, enable ? 1 : 0);
-    if (!enable) ok = write_u8(id, reg::LOCK, 0) && ok;
+    if (!enable && ok) {
+        // Some STS servos reject LOCK writes depending on firmware/alarm state.
+        // Torque control is the required operation here; LOCK is only a best-effort unlock
+        // for optional parameter writes.
+        write_u8(id, reg::LOCK, 0);
+    }
     return ok;
 }
 

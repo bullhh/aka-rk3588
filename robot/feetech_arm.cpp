@@ -1,6 +1,7 @@
 #include "feetech_arm.hpp"
 
 #include <algorithm>
+#include <stdio.h>
 #include <unistd.h>
 #include <vector>
 
@@ -36,18 +37,41 @@ bool FeetechArm::load_calibration(const std::string& path) {
 
 bool FeetechArm::configure() {
     if (!calibrated_) return false;
-    bool ok = true;
     for (const auto& kv : joints_) {
         int id = kv.second.id;
-        ok = bus_.enable_torque(id, false) && ok;
-        ok = bus_.set_operating_mode(id, feetech::OperatingMode::POSITION) && ok;
-        ok = bus_.write_u8(id, feetech::reg::P_COEFFICIENT, 16) && ok;
-        ok = bus_.write_u8(id, feetech::reg::I_COEFFICIENT, 0) && ok;
-        ok = bus_.write_u8(id, feetech::reg::D_COEFFICIENT, 32) && ok;
-        ok = bus_.set_acceleration(id, 80) && ok;
-        ok = bus_.enable_torque(id, true) && ok;
+        if (!bus_.enable_torque(id, false)) {
+            fprintf(stderr, "[FeetechArm] configure %s id=%d torque-off failed: %s\n",
+                    kv.first.c_str(), id, bus_.last_error().c_str());
+            return false;
+        }
+        if (!bus_.set_operating_mode(id, feetech::OperatingMode::POSITION)) {
+            fprintf(stderr, "[FeetechArm] configure %s id=%d position-mode failed: %s\n",
+                    kv.first.c_str(), id, bus_.last_error().c_str());
+            return false;
+        }
+        if (!bus_.write_u8(id, feetech::reg::P_COEFFICIENT, 16)) {
+            fprintf(stderr, "[FeetechArm] configure %s id=%d P coefficient skipped: %s\n",
+                    kv.first.c_str(), id, bus_.last_error().c_str());
+        }
+        if (!bus_.write_u8(id, feetech::reg::I_COEFFICIENT, 0)) {
+            fprintf(stderr, "[FeetechArm] configure %s id=%d I coefficient skipped: %s\n",
+                    kv.first.c_str(), id, bus_.last_error().c_str());
+        }
+        if (!bus_.write_u8(id, feetech::reg::D_COEFFICIENT, 32)) {
+            fprintf(stderr, "[FeetechArm] configure %s id=%d D coefficient skipped: %s\n",
+                    kv.first.c_str(), id, bus_.last_error().c_str());
+        }
+        if (!bus_.set_acceleration(id, 80)) {
+            fprintf(stderr, "[FeetechArm] configure %s id=%d acceleration skipped: %s\n",
+                    kv.first.c_str(), id, bus_.last_error().c_str());
+        }
+        if (!bus_.enable_torque(id, true)) {
+            fprintf(stderr, "[FeetechArm] configure %s id=%d torque-on failed: %s\n",
+                    kv.first.c_str(), id, bus_.last_error().c_str());
+            return false;
+        }
     }
-    return ok;
+    return true;
 }
 
 int FeetechArm::deg_to_raw(const Joint& joint, float deg) const {

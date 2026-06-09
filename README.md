@@ -18,6 +18,12 @@ Feetech 总线：/dev/ttyACM0
 抓取调参文件：config/lekiwi_pick_config.txt
 ```
 
+完整中文说明书见：
+
+```text
+docs/lekiwi_user_manual.md
+```
+
 ## 编译
 
 在 Orange Pi 上执行：

@@ -423,7 +423,6 @@ int main(int argc, char** argv)
     GameState game_state = GameState::CHASE_BALL;
     int  bucket_lost_cnt  = 0;   // 连续找不到桶的帧数
     int  bucket_confirm   = 0;   // 连续看到桶的帧数（防抖）
-    int  lekiwi_hold_lost_cnt = 0; // LeKiwi 夹球后夹爪反馈连续丢失计数
     LeKiwiMoveController lekiwi_move(FRAME_WIDTH, FRAME_HEIGHT);
     LeKiwiArmController* lekiwi_arm_ctrl = use_lekiwi ? new LeKiwiArmController(*ft_arm_ptr) : nullptr;
     int lekiwi_arm_log_tick = 0;
@@ -541,7 +540,6 @@ int main(int argc, char** argv)
                         dup2(g_devnull, STDERR_FILENO);
                     }
                     lekiwi_pick_retry_index = 0;
-                    lekiwi_hold_lost_cnt = 0;
                     game_state = GameState::FIND_BUCKET;
                     bucket_lost_cnt = 0;
                     bucket_confirm = 0;
@@ -607,7 +605,6 @@ int main(int argc, char** argv)
                 last_seen_frame = -999;
                 bucket_lost_cnt = 0;
                 bucket_confirm = 0;
-                lekiwi_hold_lost_cnt = 0;
                 game_state = GameState::CHASE_BALL;
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[GAME] PUT_BALL done -> CHASE_BALL\n");
@@ -626,32 +623,6 @@ int main(int argc, char** argv)
             // 这里重新以 FRAME 尺寸解码一次供桶检测用）
             decode_mjpeg(mjpeg_buf, jpeg_len, bucket_rgb,
                          FRAME_WIDTH, FRAME_HEIGHT, nullptr, nullptr, nullptr);
-
-            if (use_lekiwi &&
-                (game_state == GameState::FIND_BUCKET ||
-                 game_state == GameState::APPROACH_BUCKET)) {
-                float gripper_pos = 0.0f;
-                bool holding = lekiwi_arm_ctrl && lekiwi_arm_ctrl->verify_grab(&gripper_pos);
-                if (!holding) {
-                    lekiwi_hold_lost_cnt++;
-                    dup2(g_saved_stderr, STDERR_FILENO);
-                    printf("[GAME] hold check lost %d/5 gripper=%.1f\n",
-                           lekiwi_hold_lost_cnt, gripper_pos);
-                    dup2(g_devnull, STDERR_FILENO);
-                    if (lekiwi_hold_lost_cnt >= 5) {
-                        drive_ptr->standby();
-                        lekiwi_move.reset();
-                        if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
-                        game_state = GameState::CHASE_BALL;
-                        dup2(g_saved_stderr, STDERR_FILENO);
-                        printf("[GAME] lost ball before bucket confirmed -> CHASE_BALL\n");
-                        dup2(g_devnull, STDERR_FILENO);
-                        continue;
-                    }
-                } else {
-                    lekiwi_hold_lost_cnt = 0;
-                }
-            }
 
             if (game_state == GameState::DEPOSIT) {
                 drive_ptr->standby();
