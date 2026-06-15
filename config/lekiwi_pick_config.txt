@@ -26,18 +26,19 @@ wrist_lift_pitch = -20
 # 建议每次改 5，例如 80 -> 75 或 85，观察夹爪闭合时是否更贴合球。
 
 # 是否在夹爪闭合后把肩部水平转动关节转回原位。
-# 0 表示不转回，便于观察是否夹住；1 表示按 Python 原动作转回。
-return_shoulder_pan = 0
+# 0 表示不转回，便于观察是否夹住；1 表示按 Desktop-Wanderer 原动作转回。
+return_shoulder_pan = 1
 
 # 视觉伺服停车尺寸。当前默认 155 像素，让车比 168~170 像素时稍远一点停车。
 # 增大该值，车会离球更近再停；减小该值，车会离球更远就停。
 ball_target_size = 155
-ball_size_tolerance = 5
+ball_size_tolerance = 15
 
 # 进入抓取前允许的球中心误差，单位是像素。
-# 之前 off=27/28 也会抓取，容易导致夹爪横向偏离；现在默认要求误差不超过 12。
-ball_center_tolerance = 12
-stable_frames = 10
+# StarryOS 真实 RKNN 闭环帧率约 2.3fps，架空测试时检测中心会在约 +/-30px
+# 内抖动。这里允许短时间稳定停车后进入抓取，避免一直 BALL_FINE_LEFT/RIGHT。
+ball_center_tolerance = 30
+stable_frames = 2
 
 # 完整闭环中，如果第一次没有夹住，程序会先回到视觉追球重新对准，
 # 然后再使用下一组小偏移抓取，避免球被碰动后还在旧位置反复夹。

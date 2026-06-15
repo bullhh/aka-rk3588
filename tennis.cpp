@@ -17,8 +17,10 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <algorithm>
+#include <string>
 #include <vector>
 #include <utility>
+#include <csignal>
 
 #include <turbojpeg.h>
 
@@ -121,21 +123,23 @@ static DriveAdapter*       g_drive      = nullptr;
 static UvcCapture*         g_capture    = nullptr;
 static rknn_app_context_t* g_rknn_ctx   = nullptr;
 static Arm*                g_arm        = nullptr;
+static feetech::FeetechBus* g_feetech_bus = nullptr;
 static int                 g_saved_stderr = -1;
 static int                 g_devnull    = -1;
+static volatile sig_atomic_t g_stop_requested = 0;
 
 static void cleanup_and_exit() {
     if (g_drive)    g_drive->standby();
     else if (g_motor) g_motor->standby();
     if (g_capture)  g_capture->close();
     if (g_rknn_ctx) detect_deinit(g_rknn_ctx);
+    if (g_feetech_bus) g_feetech_bus->close();
     if (g_saved_stderr >= 0 && g_devnull >= 0)
         dup2(g_saved_stderr, STDERR_FILENO);
 }
 
 static void signal_handler(int /*sig*/) {
-    cleanup_and_exit();
-    exit(0);
+    g_stop_requested = 1;
 }
 
 // ── Timing helper ─────────────────────────────────────────────────────────────
@@ -201,12 +205,44 @@ static int base_speed(float area_ratio) {
     return (int)(CHASE_SPEED_FAR + t * (BRAKE_SPEED - CHASE_SPEED_FAR));
 }
 
+struct BallView {
+    bool visible = false;
+    float area_ratio = 0.0f;
+    int cx = 0;
+    int offset = 0;
+    int size = 0;
+};
+
+static BallView best_ball_view(const std::vector<detection>& dets,
+                               int frame_width,
+                               int frame_height) {
+    BallView view;
+    if (dets.empty()) return view;
+
+    int best = 0;
+    for (int i = 1; i < (int)dets.size(); i++) {
+        if (dets[i].bbox.w * dets[i].bbox.h >
+            dets[best].bbox.w * dets[best].bbox.h) {
+            best = i;
+        }
+    }
+
+    const box& b = dets[best].bbox;
+    view.visible = true;
+    view.area_ratio = (b.w * b.h) / (float)(frame_width * frame_height);
+    view.cx = (int)b.x;
+    view.offset = view.cx - frame_width / 2;
+    view.size = (int)std::max(b.w, b.h);
+    return view;
+}
+
 // ── Usage ─────────────────────────────────────────────────────────────────────
 static void usage(const char* prog) {
     LOGI("Usage:");
-    LOGI("  %s <model.rknn> [uart_dev] [uvc_device_index] [arm_dev] [platform]", prog);
+    LOGI("  %s <model.rknn> [uart_dev] [uvc_device_index] [arm_dev] [platform] [--stop-after-chase]", prog);
     LOGI("  Example legacy: %s tennis.rknn /dev/ttyS3 0 /dev/ttyUSB1", prog);
     LOGI("  Example lekiwi: %s tennis.rknn /dev/ttyACM0 0 /dev/ttyACM0 lekiwi", prog);
+    LOGI("  Example lekiwi safe chase test: %s tennis.rknn auto 0 auto lekiwi --stop-after-chase", prog);
     LOGI("  %s test-uvc   [uvc_index]               -- capture one frame -> capture.jpg", prog);
     LOGI("  %s test-yolo  <model.rknn> [uvc_index]  -- detect one frame  -> result.jpg", prog);
     LOGI("  %s test-motor [uart_dev] [speed=N]       -- motor test", prog);
@@ -314,6 +350,23 @@ int main(int argc, char** argv)
     const char* arm_dev    = (argc >= 5) ? argv[4] : "/dev/ttyUSB1";
     const char* platform   = (argc >= 6) ? argv[5] : "legacy";
     bool use_lekiwi = (strcmp(platform, "lekiwi") == 0 || strcmp(platform, "omni") == 0);
+    bool stop_after_chase = false;
+    const char* stop_env = getenv("LEKIWI_STOP_AFTER_CHASE");
+    if (stop_env && strcmp(stop_env, "0") != 0 && strcmp(stop_env, "false") != 0)
+        stop_after_chase = true;
+    bool fake_ball = false;
+    const char* fake_ball_env = getenv("LEKIWI_FAKE_BALL");
+    if (fake_ball_env && strcmp(fake_ball_env, "0") != 0 && strcmp(fake_ball_env, "false") != 0)
+        fake_ball = true;
+    for (int i = 6; i < argc; i++) {
+        if (strcmp(argv[i], "--stop-after-chase") == 0) {
+            stop_after_chase = true;
+        } else {
+            LOGE("Unknown option: %s", argv[i]);
+            usage(argv[0]);
+            return 1;
+        }
+    }
     const int stop_center_offset = use_lekiwi ? 0 : STOP_CENTER_OFFSET;
 
     signal(SIGINT,  signal_handler);
@@ -329,22 +382,27 @@ int main(int argc, char** argv)
 
     if (use_lekiwi) {
         ft_bus_ptr = new feetech::FeetechBus(uart_dev, 1000000);
+        g_feetech_bus = ft_bus_ptr;
         if (!ft_bus_ptr->open()) {
             LOGE("Failed to open Feetech bus %s: %s", uart_dev, ft_bus_ptr->last_error().c_str());
+            cleanup_and_exit();
             return 1;
         }
         omni_base_ptr = new OmniBase(*ft_bus_ptr);
         ft_arm_ptr = new FeetechArm(*ft_bus_ptr);
         if (!ft_arm_ptr->has_calibration()) {
             LOGE("Missing/invalid LeKiwi calibration: %s", ft_arm_ptr->calibration_error().c_str());
+            cleanup_and_exit();
             return 1;
         }
         if (!omni_base_ptr->configure()) {
             LOGE("Failed to configure omni base: %s", ft_bus_ptr->last_error().c_str());
+            cleanup_and_exit();
             return 1;
         }
         if (!ft_arm_ptr->configure()) {
             LOGE("Failed to configure Feetech arm: %s", ft_bus_ptr->last_error().c_str());
+            cleanup_and_exit();
             return 1;
         }
         drive_ptr = new OmniDriveAdapter(*omni_base_ptr);
@@ -352,6 +410,9 @@ int main(int argc, char** argv)
         g_drive = drive_ptr;
         arm_ptr->grab_pos();
         LOGI("LeKiwi platform initialized (Feetech %s)", uart_dev);
+        if (stop_after_chase) {
+            LOGI("LeKiwi safe test enabled: stop after confirmed chase/ready state");
+        }
     } else {
         motor_ptr = new Motor(MotorDriverType::UART, uart_dev);
         g_motor = motor_ptr;
@@ -370,14 +431,18 @@ int main(int argc, char** argv)
     UvcCapture capture;
     g_capture = &capture;
     if (capture.open(uvc_index, FRAME_WIDTH, FRAME_HEIGHT, 30) != 0) {
-        LOGE("Failed to open UVC device %d", uvc_index); return 1;
+        LOGE("Failed to open UVC device %d", uvc_index);
+        cleanup_and_exit();
+        return 1;
     }
     LOGI("Camera opened (%dx%d)", FRAME_WIDTH, FRAME_HEIGHT);
 
     rknn_app_context_t rknn_ctx;
     g_rknn_ctx = &rknn_ctx;
     if (detect_init(model_path, &rknn_ctx) != 0) {
-        LOGE("Failed to load model: %s", model_path); return 1;
+        LOGE("Failed to load model: %s", model_path);
+        cleanup_and_exit();
+        return 1;
     }
     int model_w = rknn_ctx.model_width;
     int model_h = rknn_ctx.model_height;
@@ -393,7 +458,11 @@ int main(int argc, char** argv)
     uint8_t* rgb_buf   = (uint8_t*)malloc(model_w * model_h * 3);
     // separate full-res buffer for bucket detection (HSV on 640×480)
     uint8_t* bucket_rgb = (uint8_t*)malloc(FRAME_WIDTH * FRAME_HEIGHT * 3);
-    if (!mjpeg_buf || !rgb_buf || !bucket_rgb) { LOGE("OOM"); return 1; }
+    if (!mjpeg_buf || !rgb_buf || !bucket_rgb) {
+        LOGE("OOM");
+        cleanup_and_exit();
+        return 1;
+    }
 
     dup2(g_saved_stderr, STDERR_FILENO);
     LOGI("Warming up camera (skip 20 frames)...");
@@ -421,6 +490,8 @@ int main(int argc, char** argv)
 
     // ── Game state ────────────────────────────────────────────────────────────
     GameState game_state = GameState::CHASE_BALL;
+    int  stop_after_chase_confirm = 0;
+    static const int STOP_AFTER_CHASE_CONFIRM = 3;
     int  bucket_lost_cnt  = 0;   // 连续找不到桶的帧数
     int  bucket_confirm   = 0;   // 连续看到桶的帧数（防抖）
     LeKiwiMoveController lekiwi_move(FRAME_WIDTH, FRAME_HEIGHT);
@@ -445,12 +516,21 @@ int main(int argc, char** argv)
 
     // ── Chase loop ────────────────────────────────────────────────────────────
     while (true) {
+        if (g_stop_requested) {
+            cleanup_and_exit();
+            return 0;
+        }
+
         struct timeval t_start, t_stage;
         gettimeofday(&t_start, nullptr);
         frame_idx++;
 
         int jpeg_len = capture.getFrame(mjpeg_buf, MJPEG_BUF, 200);
         if (jpeg_len <= 0) {
+            if (g_stop_requested) {
+                cleanup_and_exit();
+                return 0;
+            }
             dup2(g_saved_stderr, STDERR_FILENO);
             LOGW("[Frame %d] No frame (timeout)", frame_idx);
             dup2(g_devnull, STDERR_FILENO);
@@ -483,13 +563,26 @@ int main(int argc, char** argv)
                     lekiwi_pick_attempt_config.pre_grab_y += dy;
                     lekiwi_pick_attempt_config.grab_y += dy;
                 }
-                lekiwi_arm_ctrl->begin_pick(lekiwi_pick_attempt_config);
-                dup2(g_saved_stderr, STDERR_FILENO);
                 float log_dx = 0.0f, log_dy = 0.0f;
                 if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets.size()) {
                     log_dx = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].first;
                     log_dy = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].second;
                 }
+                if (!lekiwi_arm_ctrl->begin_pick(lekiwi_pick_attempt_config)) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] PICK_BALL begin failed attempt=%zu/%zu offset=(%.4f, %.4f): %s\n",
+                           lekiwi_pick_retry_index + 1,
+                           lekiwi_pick_retry_offsets.size(),
+                           log_dx,
+                           log_dy,
+                           lekiwi_arm_ctrl->last_error().c_str());
+                    dup2(g_devnull, STDERR_FILENO);
+                    lekiwi_arm_ctrl->reset();
+                    lekiwi_move.reset();
+                    game_state = GameState::CHASE_BALL;
+                    continue;
+                }
+                dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[GAME] PICK_BALL start IK catch sequence attempt=%zu/%zu offset=(%.4f, %.4f) grab=(%.4f, %.4f)\n",
                        lekiwi_pick_retry_index + 1,
                        lekiwi_pick_retry_offsets.size(),
@@ -502,7 +595,8 @@ int main(int argc, char** argv)
 
             if (!lekiwi_arm_ctrl || !lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
                 dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PICK_BALL controller failed -> CHASE_BALL\n");
+                printf("[GAME] PICK_BALL controller failed -> CHASE_BALL: %s\n",
+                       lekiwi_arm_ctrl ? lekiwi_arm_ctrl->last_error().c_str() : "missing controller");
                 dup2(g_devnull, STDERR_FILENO);
                 if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
                 lekiwi_move.reset();
@@ -521,10 +615,67 @@ int main(int argc, char** argv)
 
             if (lekiwi_arm_ctrl->done()) {
                 float gripper_pos = 0.0f;
-                bool holding = lekiwi_arm_ctrl->verify_grab(&gripper_pos);
+                bool gripper_holds = lekiwi_arm_ctrl->verify_grab(&gripper_pos);
+                std::vector<detection> post_pick_dets;
+                long post_ti = 0, post_tr = 0, post_to = 0, post_tp = 0;
+                long post_frame_us = 0;
+
+                int post_jpeg_len = capture.getFrame(mjpeg_buf, MJPEG_BUF, 250);
+                if (post_jpeg_len > 0) {
+                    long post_th = 0, post_td = 0, post_tc = 0;
+                    int post_lb_x = 0, post_lb_y = 0;
+                    float post_lb_sc = 1.0f;
+                    struct timeval post_frame_start;
+                    gettimeofday(&post_frame_start, nullptr);
+                    if (decode_mjpeg(mjpeg_buf, post_jpeg_len, rgb_buf, model_w, model_h,
+                                     &post_lb_x, &post_lb_y, &post_lb_sc,
+                                     &post_th, &post_td, &post_tc) == 0) {
+                        if (fake_ball) {
+                            detection fake{};
+                            fake.bbox.x = FRAME_WIDTH * 0.35f;
+                            fake.bbox.y = FRAME_HEIGHT * 0.55f;
+                            fake.bbox.w = FRAME_WIDTH * 0.12f;
+                            fake.bbox.h = FRAME_HEIGHT * 0.12f;
+                            fake.score = 1.0f;
+                            fake.cls = 0;
+                            fake.batch_idx = 0;
+                            post_pick_dets.push_back(fake);
+                        } else {
+                            detect_run(&rknn_ctx, rgb_buf, model_w, model_h,
+                                       FRAME_WIDTH, FRAME_HEIGHT,
+                                       post_lb_x, post_lb_y, post_lb_sc,
+                                       0.5f, 0.45f, post_pick_dets,
+                                       &post_ti, &post_tr, &post_to, &post_tp);
+                        }
+                        post_frame_us = elapsed_us(post_frame_start);
+                        t_decode_acc += post_th + post_td + post_tc;
+                        t_infer_acc += post_ti + post_tr + post_to + post_tp;
+                    }
+                }
+
+                BallView post_ball = best_ball_view(post_pick_dets, FRAME_WIDTH, FRAME_HEIGHT);
+                if (post_ball.visible) {
+                    last_offset = post_ball.offset;
+                    last_seen_frame = frame_idx;
+                }
+
+                LeKiwiMoveController post_pick_move(FRAME_WIDTH, FRAME_HEIGHT);
+                auto post_cmd = post_pick_move.update_ball(post_pick_dets);
+                bool ball_ready_for_retry =
+                    post_ball.visible && strcmp(post_cmd.label, "BALL_READY") == 0;
+                bool holding = gripper_holds && !post_ball.visible;
+
                 dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PICK_BALL done gripper=%.1f holding=%s\n",
-                       gripper_pos, holding ? "yes" : "no");
+                printf("[GAME] PICK_BALL done gripper=%.1f gripper_hold=%s ball_visible=%s area=%.3f off=%d size=%d label=%s holding=%s post_fps=%.1f\n",
+                       gripper_pos,
+                       gripper_holds ? "yes" : "no",
+                       post_ball.visible ? "yes" : "no",
+                       post_ball.area_ratio,
+                       post_ball.offset,
+                       post_ball.size,
+                       post_cmd.label,
+                       holding ? "yes" : "no",
+                       post_frame_us > 0 ? 1e6f / post_frame_us : 0.0f);
                 dup2(g_devnull, STDERR_FILENO);
                 lekiwi_arm_ctrl->reset();
                 lekiwi_arm_log_tick = 0;
@@ -547,18 +698,36 @@ int main(int argc, char** argv)
                 } else {
                     lekiwi_pick_retry_index++;
                     if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets.size()) {
-                        game_state = GameState::CHASE_BALL;
-                        lekiwi_move.reset();
-                        last_seen_frame = -999;
+                        if (ball_ready_for_retry) {
+                            game_state = GameState::PICK_BALL;
+                        } else {
+                            game_state = GameState::CHASE_BALL;
+                            if (post_ball.visible) {
+                                lekiwi_move.remember_ball(post_ball.cx);
+                            } else if (last_seen_frame >= 0) {
+                                lekiwi_move.remember_ball(FRAME_WIDTH / 2 + last_offset);
+                            }
+                        }
                         dup2(g_saved_stderr, STDERR_FILENO);
-                        printf("[GAME] grab failed -> CHASE_BALL for visual realign, next pick attempt=%zu/%zu\n",
+                        printf("[GAME] grab failed -> %s next attempt=%zu/%zu reason=%s\n",
+                               ball_ready_for_retry ? "PICK_BALL immediate retry"
+                                                    : "CHASE_BALL visual realign",
                                lekiwi_pick_retry_index + 1,
-                               lekiwi_pick_retry_offsets.size());
+                               lekiwi_pick_retry_offsets.size(),
+                               post_ball.visible ? "ball still visible"
+                                                 : "ball not confirmed held or visible");
                         dup2(g_devnull, STDERR_FILENO);
                     } else {
                         lekiwi_pick_retry_index = 0;
                         game_state = GameState::CHASE_BALL;
+                        if (post_ball.visible) {
+                            lekiwi_move.remember_ball(post_ball.cx);
+                        } else if (last_seen_frame >= 0) {
+                            lekiwi_move.remember_ball(FRAME_WIDTH / 2 + last_offset);
+                        }
+                        dup2(g_saved_stderr, STDERR_FILENO);
                         printf("[GAME] grab failed all attempts -> CHASE_BALL\n");
+                        dup2(g_devnull, STDERR_FILENO);
                     }
                 }
             }
@@ -753,9 +922,24 @@ int main(int argc, char** argv)
         // ── 以下为 CHASE_BALL 逻辑（YOLO based）─────────────────────────────
         long ti=0, tr=0, to=0, tp=0;
         std::vector<detection> dets;
-        detect_run(&rknn_ctx, rgb_buf, model_w, model_h,
-                   FRAME_WIDTH, FRAME_HEIGHT, lb_x, lb_y, lb_sc,
-                   0.5f, 0.45f, dets, &ti, &tr, &to, &tp);
+        if (fake_ball) {
+            detection fake{};
+            fake.bbox.x = FRAME_WIDTH * 0.35f;
+            fake.bbox.y = FRAME_HEIGHT * 0.55f;
+            fake.bbox.w = FRAME_WIDTH * 0.12f;
+            fake.bbox.h = FRAME_HEIGHT * 0.12f;
+            fake.score = 1.0f;
+            fake.cls = 0;
+            fake.batch_idx = 0;
+            dets.push_back(fake);
+            dup2(g_saved_stderr, STDERR_FILENO);
+            printf("[SAFETY] LEKIWI_FAKE_BALL injected for chase validation\n");
+            dup2(g_devnull, STDERR_FILENO);
+        } else {
+            detect_run(&rknn_ctx, rgb_buf, model_w, model_h,
+                       FRAME_WIDTH, FRAME_HEIGHT, lb_x, lb_y, lb_sc,
+                       0.5f, 0.45f, dets, &ti, &tr, &to, &tp);
+        }
         t_infer_acc += ti + tr + to + tp;
 
         // ── Smooth differential steering ──────────────────────────────────────
@@ -792,6 +976,27 @@ int main(int argc, char** argv)
                        cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0,
                        1e6f / frame_us);
                 dup2(g_devnull, STDERR_FILENO);
+
+                if (stop_after_chase) {
+                    const bool has_motion = !cmd.idle &&
+                                            (cmd.left_speed != 0 || cmd.right_speed != 0);
+                    if (has_motion || cmd.reached) {
+                        stop_after_chase_confirm++;
+                    } else {
+                        stop_after_chase_confirm = 0;
+                    }
+
+                    if (stop_after_chase_confirm >= STOP_AFTER_CHASE_CONFIRM) {
+                        drive_ptr->standby();
+                        dup2(g_saved_stderr, STDERR_FILENO);
+                        printf("[SAFETY] STOP_AFTER_CHASE confirmed=%d label=%s L=%d R=%d ready=%d\n",
+                               stop_after_chase_confirm, cmd.label,
+                               cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
+                        dup2(g_devnull, STDERR_FILENO);
+                        cleanup_and_exit();
+                        return 0;
+                    }
+                }
 
                 if (cmd.reached) {
                     drive_ptr->standby();
@@ -976,6 +1181,7 @@ int main(int argc, char** argv)
             dup2(g_devnull, STDERR_FILENO);
 
         } else {
+            stop_after_chase_confirm = 0;
             if (use_lekiwi) {
                 auto cmd = lekiwi_move.update_ball(dets);
                 if (cmd.idle) drive_ptr->standby();

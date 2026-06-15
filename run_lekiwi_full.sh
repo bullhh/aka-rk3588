@@ -1,5 +1,5 @@
 #!/bin/sh
-# Backward-compatible alias for the safe raised-frame test.
+# Full pick-and-place flow. This can move the robot and search for a bucket.
 
 set -eu
 
@@ -41,14 +41,14 @@ else
     "${SCRIPT_DIR}/build_rk3588.sh" -b Release -l INFO
 fi
 
-echo "=== LeKiwi safe raised-frame test ==="
+echo "=== LeKiwi full pick-and-bucket flow ==="
 echo "  model       : ${MODEL_PATH}"
 echo "  feetech_dev : ${FEETECH_DEV}"
 echo "  uvc_index   : ${UVC_INDEX}"
 echo "  rknn core   : ${RKNN_CORE_MASK:-012}"
 echo "  ld path     : ${LD_LIBRARY_PATH:-}"
-echo "  command     : ${SCRIPT_DIR}/build/tennis ${MODEL_PATH} ${FEETECH_DEV} ${UVC_INDEX} ${FEETECH_DEV} lekiwi --stop-after-chase"
+echo "  command     : ${SCRIPT_DIR}/build/tennis ${MODEL_PATH} ${FEETECH_DEV} ${UVC_INDEX} ${FEETECH_DEV} lekiwi"
 echo ""
 
 cd "${SCRIPT_DIR}" || exit 1
-"${SCRIPT_DIR}/build/tennis" "${MODEL_PATH}" "${FEETECH_DEV}" "${UVC_INDEX}" "${FEETECH_DEV}" lekiwi --stop-after-chase
+"${SCRIPT_DIR}/build/tennis" "${MODEL_PATH}" "${FEETECH_DEV}" "${UVC_INDEX}" "${FEETECH_DEV}" lekiwi

@@ -1,9 +1,12 @@
 #ifndef FEETECH_BUS_HPP
 #define FEETECH_BUS_HPP
 
+#include <stddef.h>
 #include <stdint.h>
 #include <string>
 #include <vector>
+
+#include <libusb-1.0/libusb.h>
 
 namespace feetech {
 
@@ -27,7 +30,7 @@ public:
     explicit FeetechBus(const std::string& port = "/dev/ttyACM0", int baudrate = 1000000);
     ~FeetechBus();
 
-    bool is_open() const { return fd_ >= 0; }
+    bool is_open() const;
     bool open();
     void close();
 
@@ -64,6 +67,14 @@ private:
 
     bool open_port();
     bool configure_port();
+    bool open_usb_cdc();
+    void close_usb();
+    bool configure_usb_cdc();
+    bool write_bytes(const uint8_t* data, size_t len);
+    bool read_byte(uint8_t& byte, int timeout_ms);
+    bool read_usb_packet(int timeout_ms);
+    bool drain_usb_input(int quiet_timeout_ms = 2, int max_packets = 8);
+    void flush_input();
     bool tx_packet(uint8_t id, uint8_t instruction, const std::vector<uint8_t>& params);
     bool rx_status(uint8_t expected_id, std::vector<uint8_t>& params, uint8_t* error_out,
                    int timeout_ms = 100);
@@ -80,10 +91,28 @@ private:
     static uint8_t hi(uint16_t value) { return (uint8_t)((value >> 8) & 0xff); }
 
     void set_error(const std::string& msg);
+    void log_debug(const char* fmt, ...) const;
+
+    enum class Backend {
+        NONE,
+        TTY,
+        USB_CDC,
+    };
 
     std::string port_;
     int baudrate_;
     int fd_ = -1;
+    Backend backend_ = Backend::NONE;
+    libusb_context* usb_ctx_ = nullptr;
+    libusb_device_handle* usb_handle_ = nullptr;
+    int usb_control_iface_ = -1;
+    int usb_data_iface_ = -1;
+    bool usb_control_claimed_ = false;
+    bool usb_data_claimed_ = false;
+    uint8_t usb_ep_in_ = 0;
+    uint8_t usb_ep_out_ = 0;
+    std::vector<uint8_t> usb_rx_buffer_;
+    size_t usb_rx_offset_ = 0;
     bool debug_ = false;
     std::string last_error_;
 };

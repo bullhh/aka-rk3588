@@ -129,6 +129,10 @@ void LeKiwiMoveController::reset() {
     last_target_cx_ = -1;
 }
 
+void LeKiwiMoveController::remember_ball(int cx) {
+    last_target_cx_ = std::max(0, std::min(frame_width_ - 1, cx));
+}
+
 const detection* LeKiwiMoveController::choose_best_ball(const std::vector<detection>& detections,
                                                         int target_cx) {
     if (detections.empty()) return nullptr;
@@ -249,6 +253,7 @@ LeKiwiArmController::LeKiwiArmController(FeetechArm& arm) : arm_(arm) {
         {"arm_wrist_roll", 0.0f},
         {"arm_gripper", 10.0f},
     };
+    last_error_.clear();
 }
 
 std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
@@ -305,6 +310,8 @@ void LeKiwiArmController::reset() {
         {"arm_wrist_roll", 0.0f},
         {"arm_gripper", 10.0f},
     };
+    observed_.clear();
+    commanded_.clear();
 }
 
 bool LeKiwiArmController::begin_pick() {
@@ -331,8 +338,28 @@ bool LeKiwiArmController::begin_put() {
 
 bool LeKiwiArmController::load_current_positions() {
     observed_.clear();
-    if (!arm_.get_joint_degs(observed_)) return false;
+    commanded_.clear();
+    bool used_fallback = false;
+    for (const auto& name : arm_.joint_names()) {
+        float deg = 0.0f;
+        if (arm_.get_joint_deg(name, deg)) {
+            observed_[name] = apply_joint_calibration(name, deg);
+            continue;
+        }
+
+        auto target = targets_.find(name);
+        if (target == targets_.end()) {
+            last_error_ = "load current positions failed: " + arm_.last_error();
+            return false;
+        }
+        observed_[name] = target->second;
+        used_fallback = true;
+        fprintf(stderr, "[LeKiwiArmController] using target fallback for %s after read failure: %s\n",
+                name.c_str(), arm_.last_error().c_str());
+    }
     if (targets_.empty()) targets_ = observed_;
+    commanded_ = observed_;
+    if (!used_fallback) last_error_.clear();
     return true;
 }
 
@@ -395,17 +422,29 @@ void LeKiwiArmController::inverse_kinematics(float x,
 }
 
 bool LeKiwiArmController::send_current_targets() {
-    if (!load_current_positions()) return false;
-
     std::map<std::string, float> action;
+    constexpr float kArmKp = 0.55f;
+    constexpr float kGripperKp = 0.8f;
     for (const auto& kv : targets_) {
-        auto it = observed_.find(kv.first);
-        if (it == observed_.end()) continue;
-        float current = apply_joint_calibration(kv.first, it->second);
+        float current = kv.second;
+        auto it = commanded_.find(kv.first);
+        if (it != commanded_.end()) current = it->second;
+        else {
+            auto obs = observed_.find(kv.first);
+            if (obs != observed_.end()) current = obs->second;
+        }
         float error = kv.second - current;
-        action[kv.first] = current + 0.8f * error;
+        float kp = (kv.first == "arm_gripper") ? kGripperKp : kArmKp;
+        float next = current + kp * error;
+        action[kv.first] = next;
+        commanded_[kv.first] = next;
     }
-    return arm_.write_degrees(action, 0);
+    if (!arm_.write_degrees(action, 0)) {
+        last_error_ = "write current targets failed: " + arm_.last_error();
+        return false;
+    }
+    observed_ = commanded_;
+    return true;
 }
 
 bool LeKiwiArmController::advance_step(const Step& step) {
@@ -471,9 +510,9 @@ bool LeKiwiArmController::step_reached(const Step& step) const {
     }
     if (step.kind == Kind::JOINT_DELTA || step.kind == Kind::WRIST_FLEX) {
         auto target = targets_.find(step.joint);
-        auto current = observed_.find(step.joint);
-        if (target == targets_.end() || current == observed_.end()) return true;
-        return std::abs(target->second - apply_joint_calibration(step.joint, current->second)) < 2.0f;
+        auto current = commanded_.find(step.joint);
+        if (target == targets_.end() || current == commanded_.end()) return true;
+        return std::abs(target->second - current->second) < 2.0f;
     }
     return true;
 }
@@ -487,11 +526,6 @@ bool LeKiwiArmController::tick() {
     }
 
     bool advanced = advance_step(sequence_[step_index_]);
-    if (!advanced && !load_current_positions()) {
-        failed_ = true;
-        active_ = false;
-        return false;
-    }
     if (advanced) {
         step_index_++;
         step_initialized_ = false;
@@ -507,8 +541,15 @@ bool LeKiwiArmController::tick() {
 bool LeKiwiArmController::verify_grab(float* gripper_pos) {
     float pos = 0.0f;
     bool ok = arm_.get_joint_deg("arm_gripper", pos);
+    if (!ok) {
+        auto target = targets_.find("arm_gripper");
+        if (target == targets_.end()) return false;
+        pos = target->second;
+        fprintf(stderr, "[LeKiwiArmController] using gripper target fallback after read failure: %s\n",
+                arm_.last_error().c_str());
+    }
     if (gripper_pos) *gripper_pos = pos;
-    return ok && pos > 25.0f;
+    return pos > 25.0f;
 }
 
 const char* LeKiwiArmController::step_kind_label(Kind kind) {

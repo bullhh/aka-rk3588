@@ -36,15 +36,22 @@ bool FeetechArm::load_calibration(const std::string& path) {
 }
 
 bool FeetechArm::configure() {
-    if (!calibrated_) return false;
+    if (!calibrated_) {
+        last_error_ = "not calibrated: " + calibration_error_;
+        return false;
+    }
     for (const auto& kv : joints_) {
         int id = kv.second.id;
         if (!bus_.enable_torque(id, false)) {
+            last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
+                          " torque-off failed: " + bus_.last_error();
             fprintf(stderr, "[FeetechArm] configure %s id=%d torque-off failed: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
             return false;
         }
         if (!bus_.set_operating_mode(id, feetech::OperatingMode::POSITION)) {
+            last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
+                          " position-mode failed: " + bus_.last_error();
             fprintf(stderr, "[FeetechArm] configure %s id=%d position-mode failed: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
             return false;
@@ -66,6 +73,8 @@ bool FeetechArm::configure() {
                     kv.first.c_str(), id, bus_.last_error().c_str());
         }
         if (!bus_.enable_torque(id, true)) {
+            last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
+                          " torque-on failed: " + bus_.last_error();
             fprintf(stderr, "[FeetechArm] configure %s id=%d torque-on failed: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
             return false;
@@ -111,24 +120,58 @@ float FeetechArm::raw_to_deg(const Joint& joint, int raw) const {
 
 bool FeetechArm::set_joint_deg(const std::string& name, float deg) {
     auto it = joints_.find(name);
-    if (it == joints_.end()) return false;
-    return bus_.set_goal_position(it->second.id, deg_to_raw(it->second, deg));
+    if (it == joints_.end()) {
+        last_error_ = "unknown joint: " + name;
+        return false;
+    }
+    if (!bus_.set_goal_position(it->second.id, deg_to_raw(it->second, deg))) {
+        last_error_ = "write joint " + name + " id=" + std::to_string(it->second.id) +
+                      " failed: " + bus_.last_error();
+        return false;
+    }
+    return true;
 }
 
 bool FeetechArm::set_joint_raw(const std::string& name, int raw) {
     auto it = joints_.find(name);
-    if (it == joints_.end()) return false;
+    if (it == joints_.end()) {
+        last_error_ = "unknown joint: " + name;
+        return false;
+    }
     raw = std::max(0, std::min(4095, raw));
-    return bus_.set_goal_position(it->second.id, raw);
+    if (!bus_.set_goal_position(it->second.id, raw)) {
+        last_error_ = "write raw joint " + name + " id=" + std::to_string(it->second.id) +
+                      " failed: " + bus_.last_error();
+        return false;
+    }
+    return true;
 }
 
 bool FeetechArm::get_joint_deg(const std::string& name, float& deg) {
     auto it = joints_.find(name);
-    if (it == joints_.end()) return false;
+    if (it == joints_.end()) {
+        last_error_ = "unknown joint: " + name;
+        return false;
+    }
     int raw = 0;
-    if (!bus_.read_u16(it->second.id, feetech::reg::PRESENT_POSITION, raw, true)) return false;
-    deg = raw_to_deg(it->second, raw);
-    return true;
+    static const int kReadAttempts = 4;
+    for (int attempt = 1; attempt <= kReadAttempts; attempt++) {
+        if (bus_.read_u16(it->second.id, feetech::reg::PRESENT_POSITION, raw, true)) {
+            if (attempt > 1) {
+                fprintf(stderr, "[FeetechArm] read joint %s id=%d recovered on attempt %d\n",
+                        name.c_str(), it->second.id, attempt);
+            }
+            deg = raw_to_deg(it->second, raw);
+            return true;
+        }
+        if (attempt < kReadAttempts) usleep(20000);
+    }
+    {
+        last_error_ = "read joint " + name + " id=" + std::to_string(it->second.id) +
+                      " position failed: " + bus_.last_error();
+        fprintf(stderr, "[FeetechArm] %s\n", last_error_.c_str());
+        return false;
+    }
 }
 
 bool FeetechArm::get_joint_degs(std::map<std::string, float>& positions) {
@@ -142,6 +185,13 @@ bool FeetechArm::get_joint_degs(std::map<std::string, float>& positions) {
     return ok;
 }
 
+std::vector<std::string> FeetechArm::joint_names() const {
+    std::vector<std::string> names;
+    names.reserve(joints_.size());
+    for (const auto& kv : joints_) names.push_back(kv.first);
+    return names;
+}
+
 bool FeetechArm::write_degrees(const std::map<std::string, float>& pose, int settle_ms) {
     return write_pose(pose, settle_ms);
 }
@@ -153,8 +203,12 @@ bool FeetechArm::write_pose(const std::map<std::string, float>& pose, int settle
         if (it == joints_.end()) continue;
         goals.push_back({it->second.id, deg_to_raw(it->second, kv.second)});
     }
-    if (goals.empty()) return false;
+    if (goals.empty()) {
+        last_error_ = "write pose failed: no valid joints";
+        return false;
+    }
     bool ok = bus_.sync_write_u16(feetech::reg::GOAL_POSITION, goals, true);
+    if (!ok) last_error_ = "sync write pose failed: " + bus_.last_error();
     if (settle_ms > 0) usleep(settle_ms * 1000);
     return ok;
 }

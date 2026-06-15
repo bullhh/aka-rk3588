@@ -239,10 +239,10 @@ LEKIWI_CHASE label=BALL_READY ready=1
 
 ```text
 [GAME] -> PICK_BALL
-[GAME] PICK_BALL done gripper=45.4 holding=yes
+[GAME] PICK_BALL done gripper=45.4 gripper_hold=yes ball_visible=no area=0.000 off=0 size=0 label=IDLE holding=yes
 ```
 
-抓取完成且判断夹住。
+抓取完成，夹爪反馈像是夹住，且抓取后视觉里不再看到球，因此判断夹住。
 
 ```text
 [GAME] -> FIND_BUCKET
@@ -317,18 +317,20 @@ stable_frames
 移动到 pre_grab
 移动到 grab
 关闭夹爪
+肩部水平关节回正
 抬起到 lift
 调整抬起后的腕部角度 wrist_lift_pitch
 ```
 
-抓取完成后读取夹爪反馈：
+抓取完成后同时使用夹爪反馈和抓取后视觉复核：
 
 ```text
-arm_gripper > 25 认为夹住
-arm_gripper <= 25 认为没夹住
+gripper_hold = arm_gripper > 25
+ball_visible = 抓取后这一帧仍能检测到球
+holding      = gripper_hold && !ball_visible
 ```
 
-如果没有夹住，程序不会直接去找桶，也不会在原地连续夹。它会回到追球状态重新视觉对准，再用下一组小偏移尝试。
+如果没有夹住，程序不会直接去找桶。如果球仍在视野内且仍是 `BALL_READY`，会立即使用下一组小偏移再次抓取；如果球仍在视野内但不再到位，会回到追球状态重新视觉对准。
 
 当前抓取参数：
 
@@ -403,7 +405,7 @@ wrist_pick_pitch = 85
 
 ## 10. 自动重试
 
-抓取失败后，程序会重新追球并使用下一组偏移：
+抓取失败后，程序会根据抓取后视觉状态选择立即重试或重新追球，并使用下一组偏移：
 
 ```text
 (0, 0)
@@ -553,4 +555,3 @@ LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH
 ```text
 models/tennis.rknn
 ```
-

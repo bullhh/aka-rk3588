@@ -56,6 +56,7 @@ echo ""
 
 BUILD_DIR="${SCRIPT_DIR}/build"
 mkdir -p "${BUILD_DIR}"
+OUTPUT="${BUILD_DIR}/tennis"
 
 cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
@@ -65,8 +66,21 @@ cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
     -DTARGET_SOC=rk3588 \
     -DNATIVE_BUILD="${NATIVE}"
 
+EMPTY_ARTIFACTS=$(find "${BUILD_DIR}" -type f \( -name '*.o' -o -name '*.a' -o -name 'tennis' \) -size 0 -print)
+if [ -n "${EMPTY_ARTIFACTS}" ]; then
+    echo "WARN: removing stale empty build artifacts before rebuild:"
+    printf '%s\n' "${EMPTY_ARTIFACTS}"
+    printf '%s\n' "${EMPTY_ARTIFACTS}" | xargs rm -f
+fi
+
 cmake --build "${BUILD_DIR}" -- -j"$(nproc)"
+
+if [ ! -s "${OUTPUT}" ]; then
+    echo "ERROR: build output is missing or empty: ${OUTPUT}" >&2
+    exit 1
+fi
 
 echo ""
 echo "=== Build done: ${BUILD_DIR}/tennis ==="
+stat -c "    Size: %s bytes" "${OUTPUT}"
 echo "    Deploy: scp ${BUILD_DIR}/tennis root@<board_ip>:/root/"

@@ -31,6 +31,52 @@ static void dump_tensor_attr(rknn_tensor_attr *attr)
            get_qnt_type_string(attr->qnt_type), attr->zp, attr->scale);
 }
 
+static rknn_core_mask choose_core_mask()
+{
+    const char *env = getenv("RKNN_CORE_MASK");
+    if (env == NULL || env[0] == '\0' || strcmp(env, "012") == 0 || strcmp(env, "0_1_2") == 0 || strcmp(env, "all") == 0)
+    {
+        return RKNN_NPU_CORE_0_1_2;
+    }
+    if (strcmp(env, "0") == 0 || strcmp(env, "core0") == 0)
+    {
+        return RKNN_NPU_CORE_0;
+    }
+    if (strcmp(env, "1") == 0 || strcmp(env, "core1") == 0)
+    {
+        return RKNN_NPU_CORE_1;
+    }
+    if (strcmp(env, "2") == 0 || strcmp(env, "core2") == 0)
+    {
+        return RKNN_NPU_CORE_2;
+    }
+    if (strcmp(env, "01") == 0 || strcmp(env, "0_1") == 0)
+    {
+        return RKNN_NPU_CORE_0_1;
+    }
+    printf("[NPU] Unknown RKNN_CORE_MASK=%s, fallback to RKNN_NPU_CORE_0_1_2\n", env);
+    return RKNN_NPU_CORE_0_1_2;
+}
+
+static const char *core_mask_name(rknn_core_mask mask)
+{
+    switch (mask)
+    {
+    case RKNN_NPU_CORE_0:
+        return "RKNN_NPU_CORE_0";
+    case RKNN_NPU_CORE_1:
+        return "RKNN_NPU_CORE_1";
+    case RKNN_NPU_CORE_2:
+        return "RKNN_NPU_CORE_2";
+    case RKNN_NPU_CORE_0_1:
+        return "RKNN_NPU_CORE_0_1";
+    case RKNN_NPU_CORE_0_1_2:
+        return "RKNN_NPU_CORE_0_1_2";
+    default:
+        return "RKNN_NPU_CORE_UNKNOWN";
+    }
+}
+
 int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
 {
     int ret;
@@ -54,8 +100,8 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
         return -1;
     }
 
-    // 设置多核模式：RK3588 有 3 个 NPU 核心
-    ret = rknn_set_core_mask(ctx, RKNN_NPU_CORE_0_1_2);  // 使用所有 3 个核心
+    rknn_core_mask core_mask = choose_core_mask();
+    ret = rknn_set_core_mask(ctx, core_mask);
     if (ret < 0)
     {
         printf("rknn_set_core_mask fail! ret=%d\n", ret);
@@ -63,7 +109,7 @@ int init_yolov8_model(const char *model_path, rknn_app_context_t *app_ctx)
     }
     else
     {
-        printf("[NPU] Using 3 cores (RKNN_NPU_CORE_0_1_2)\n");
+        printf("[NPU] Using core mask %s\n", core_mask_name(core_mask));
     }
 
     // Get Model Input Output Number

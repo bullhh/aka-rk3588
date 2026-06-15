@@ -59,6 +59,14 @@ result.jpg
 ./build/tennis test-feetech /dev/ttyACM0 torque-off
 ```
 
+Linux/Starry 共用 rootfs 验证时优先使用 `auto`，程序会先尝试 userspace libusb
+CDC 后端，失败后再回退到 `/dev/ttyACM0`：
+
+```bash
+./build/tennis test-feetech auto scan
+./build/tennis test-new-arm auto calib-check
+```
+
 用途：
 
 - `scan`：扫描 1-9 号电机是否在线。
@@ -158,9 +166,9 @@ config/lekiwi_pick_config.txt
 - 夹爪太高或太低：调整 `grab_y`。
 - 每次建议改 `0.005` 米。
 - 如果已经能明显估计偏差，例如夹爪整体靠前约 5cm，可以直接把 `grab_x` 和 `pre_grab_x` 同步减小 `0.05`。
-- 日志中 `gripper=18.6 holding=no` 这类结果表示空夹；抓住球后应显示 `holding=yes`。
+- `PICK_BALL done` 日志会同时打印夹爪反馈和抓取后视觉复核。只有 `gripper_hold=yes` 且 `ball_visible=no` 时，最终 `holding` 才会是 `yes`。
 
-完整闭环中，如果第一次没有夹住，程序不会去找桶，也不会在原地连续夹取。因为夹爪可能已经碰到球，球的位置会变化。程序会先回到追球状态重新视觉对准，然后使用下一组小偏移再次抓取：
+完整闭环中，如果第一次没有夹住，程序不会去找桶。抓取动作结束后会重新取一帧图像：如果球仍在视野内且仍处于 `BALL_READY` 区域，立即使用下一组小偏移再次抓取；如果球还在视野内但不再满足抓取条件，则先回到追球状态重新视觉对准。
 
 ```text
 (0, 0)
@@ -177,13 +185,13 @@ config/lekiwi_pick_config.txt
 
 如果某次偏移夹住了球，程序会把成功参数写回 `config/lekiwi_pick_config.txt`。如果所有偏移都失败，程序会重新从第一组参数开始追球和对准。
 
-抓取后如果看到机械臂肩部向右转一下，那是 Python 原动作里的肩部回正。现在可以通过配置关闭：
+抓取后如果看到机械臂肩部向右转一下，那是 Desktop-Wanderer 原动作里的肩部回正。当前默认开启，让夹取和回收轨迹更接近 Linux 下的 Python 版本；需要单独观察夹爪时可以临时关闭：
 
 ```text
-return_shoulder_pan = 0
+return_shoulder_pan = 1
 ```
 
-调抓球时建议保持 `0`，避免干扰观察。
+临时调抓球时可以改成 `0`，避免肩部回正干扰观察；调完建议恢复为 `1`。
 
 底盘停车距离由 `ball_target_size` 控制：
 
@@ -194,10 +202,15 @@ return_shoulder_pan = 0
 进入抓取前还会检查球中心误差：
 
 ```text
-ball_center_tolerance = 12
+ball_size_tolerance = 15
+ball_center_tolerance = 30
+stable_frames = 2
 ```
 
-也就是球不能像之前 `off=27/28` 那样偏得太多，否则会继续慢速对准，不会直接抓取。
+也就是球需要落在目标尺寸和中心误差窗口内，并连续短时间稳定后才进入夹球。
+StarryOS 真实 RKNN 闭环当前约 `2.3fps`，检测中心会随架空车轮和画面抖动在
+`+/-30px` 左右变化；如果窗口太窄，会一直输出 `BALL_FINE_LEFT/RIGHT`
+或 `BALL_BACKWARD`，日志里反复出现 `BALL_READY ... ready=0` 但无法进入夹球。
 
 夹爪闭合角度由 `wrist_pick_pitch` 控制。如果夹爪不是尽量垂直向下，而是明显倾斜，可以每次改 `5` 观察效果：
 
@@ -214,28 +227,99 @@ docs/lekiwi_cpp_closed_loop_migration.md
 
 ## 完整闭环
 
-确认视觉、总线、底盘、机械臂和抓取位置都正常后运行：
+当前 Linux/Starry 联调阶段建议把机器人架起来，默认只验证“视觉检测到球并输出
+LeKiwi 追球轮速控制”，不会继续进入抓球和找桶流程：
 
 ```bash
-./run_lekiwi_loop.sh
+./run_lekiwi_test.sh
 ```
 
-等价命令：
+`run_lekiwi_loop.sh` 目前保留为兼容入口，等价于 `run_lekiwi_test.sh`。
+
+脚本行为：
+
+- Linux 下会先执行 `build_rk3588.sh` 编译，再运行 `build/tennis`。
+- StarryOS 下不会编译，只检查并运行共享 rootfs 中已有的 `build/tennis`。
+  判断 StarryOS 时同时检查 `uname -s` 和 `hostname=starry`，避免误走编译路径。
+- StarryOS 下如果 `build/tennis` 不存在，需要先回到 Linux 编译。
+- 脚本使用 `/bin/sh` 语法，避免 StarryOS 没有 bash 或 `/usr/bin/env` 时无法执行。
+
+StarryOS 下直接等价于：
+
+```bash
+./build/tennis models/tennis.rknn auto 0 auto lekiwi --stop-after-chase
+```
+
+Linux 下默认使用 RK3588 三核 NPU。当前 StarryOS 三核 RKNPU 路径能跑完但输出
+bbox 会塌到右下角，例如 `bbox=(640,480,*,0)`，会导致车一直 `BALL_RIGHT` 原地转。
+StarryOS 下应先使用单核稳定模式：
+
+```bash
+RKNN_CORE_MASK=0 ./build/tennis models/tennis.rknn auto 0 auto lekiwi --stop-after-chase
+```
+
+`run_lekiwi_loop.sh` 在 StarryOS 下会自动设置 `RKNN_CORE_MASK=0`。Linux 真实检测路径
+不需要该变量，默认仍为三核 `RKNN_NPU_CORE_0_1_2`。
+
+达到连续追球确认条件后会主动停车退出，并打印：
+
+```text
+[SAFETY] STOP_AFTER_CHASE ...
+```
+
+如果要恢复完整闭环，可以显式关闭脚本的安全退出：
+
+```bash
+./run_lekiwi_full.sh
+```
+
+完整流程会要求输入 `RUN_FULL_LEKIWI` 确认，避免误触。如果确实需要无人值守启动，
+当前调试阶段已去掉交互确认，执行 `./run_lekiwi_full.sh` 会直接进入完整流程。
+
+完整闭环关键日志：
 
 ```bash
 ./build/tennis models/tennis.rknn /dev/ttyACM0 0 /dev/ttyACM0 lekiwi
 ```
 
-关键日志：
-
 ```text
 LEKIWI_CHASE      追球视觉伺服
 -> PICK_BALL      开始抓球
-PICK_BALL done    抓取完成并打印夹爪反馈
-grab failed       抓取失败，回到追球
+PICK_BALL done    抓取完成并打印夹爪反馈和抓取后视觉复核
+grab failed       抓取失败，立即重试或回到追球重新对准
 -> FIND_BUCKET    抓取成功，开始找桶
 -> PUT_BALL       桶到位，开始放球
 PUT_BALL done     放球完成，回到追球
+```
+
+完整闭环会在夹球成功后进入找桶流程；无桶或线束可能被车体拖拽时不要运行完整闭环。
+
+## Linux/Starry 统一入口说明
+
+当前程序为 Feetech 总线提供两个后端：
+
+```text
+TTY 后端:
+  直接打开 /dev/ttyACM0 等串口设备。
+
+userspace libusb CDC 后端:
+  通过 libusb 枚举 CDC ACM 设备，claim control/data interface，
+  发送 SET_LINE_CODING 和 SET_CONTROL_LINE_STATE，再用 bulk IN/OUT
+  传输 Feetech 协议包。
+```
+
+设备参数为 `auto` 时，选择顺序是：
+
+```text
+1. userspace libusb CDC
+2. /dev/ttyACM0 TTY
+```
+
+`auto`、`usb`、`libusb`、`cdc` 会默认打印 FeetechBus 枚举和后端选择日志。
+需要强制在普通 TTY 路径也打印调试信息时，可以设置：
+
+```bash
+LEKIWI_USB_DEBUG=1 ./build/tennis test-feetech /dev/ttyACM0 scan
 ```
 
 ## 原始位置姿态调试

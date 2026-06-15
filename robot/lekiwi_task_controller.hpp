@@ -22,7 +22,7 @@ struct LeKiwiPickConfig {
     float gripper_close_delta = -60.0f;
     float wrist_pick_pitch = 80.0f;
     float wrist_lift_pitch = -20.0f;
-    int return_shoulder_pan = 0;
+    int return_shoulder_pan = 1;
     int ball_target_size = 0;
     int ball_size_tolerance = 10;
     int ball_center_tolerance = 12;
@@ -47,6 +47,7 @@ public:
     Command update_ball(const std::vector<detection>& detections);
     Command update_bucket(bool visible, int cx, int box_w, int box_h);
     void reset();
+    void remember_ball(int cx);
 
     int target_left() const { return left_; }
     int target_right() const { return right_; }
@@ -92,6 +93,7 @@ public:
     void reset();
     bool verify_grab(float* gripper_pos = nullptr);
     const char* current_step_label() const;
+    const std::string& last_error() const { return last_error_; }
     size_t step_index() const { return step_index_; }
     size_t step_count() const { return sequence_.size(); }
 
@@ -135,7 +137,9 @@ private:
     float pitch_ = 80.0f;
     std::map<std::string, float> targets_;
     std::map<std::string, float> observed_;
+    std::map<std::string, float> commanded_;
     LeKiwiPickConfig config_;
+    std::string last_error_;
 };
 
 #endif // ROBOT_LEKIWI_TASK_CONTROLLER_HPP

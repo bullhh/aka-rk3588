@@ -68,7 +68,7 @@ arm_elbow_flex
 arm_wrist_flex = -shoulder_lift - elbow_flex + pitch
 ```
 
-每帧读取当前关节角度，按 P 控制写入新的目标角度。直接关节动作会等待反馈接近目标后再进入下一步。
+Linux Python 版本每帧读取当前关节角度，按 P 控制写入新的目标角度。C++ 在 StarryOS 下为降低 USB CDC 读压力，只在动作开始时读取一次真实关节位置，之后用上一帧已发送位置作为内部当前值继续做 P 控制；这样轨迹仍是连续收敛，不会每 tick 高频读取 6 个关节。
 
 对应实现：
 
@@ -80,20 +80,21 @@ FeetechArm::write_degrees()
 
 ## 抓取失败重试
 
-抓取动作完成后，C++ 会读取 `arm_gripper` 当前位置：
+抓取动作完成后，C++ 会读取 `arm_gripper` 当前位置，并立即重新取一帧图像跑 RKNN 复核球是否仍在视野内：
 
 ```text
-arm_gripper > 25 认为夹住
-arm_gripper <= 25 认为没夹住
+gripper_hold = arm_gripper > 25
+ball_visible = 抓取后这一帧仍能检测到球
+holding      = gripper_hold && !ball_visible
 ```
 
-如果第一次没夹住，程序不会立刻去找桶，也不会在原地连续夹取。因为夹爪可能已经碰到球，球的位置会变化。当前策略是：
+如果第一次没夹住，程序不会立刻去找桶。当前策略是：
 
 ```text
 夹取失败
--> 回到 CHASE_BALL
--> 重新视觉伺服对准球
--> 到位后使用下一组偏移再次抓取
+-> 若 ball_visible 且仍为 BALL_READY，直接使用下一组偏移再次 PICK_BALL
+-> 若 ball_visible 但不再满足抓取条件，回到 CHASE_BALL 重新视觉伺服对准球
+-> 若视觉和夹爪都不能确认持球，回到 CHASE_BALL 继续找球
 ```
 
 自动偏移顺序为：
@@ -335,23 +336,22 @@ pre_grab_x = 0.0900
 ./build/tennis test-new-arm /dev/ttyACM0 ik-pick
 ```
 
-如果抓住了球，日志中最后的夹爪反馈应该明显大于空夹时的值。例如当前空夹时约为：
+如果抓住了球，日志中最后的夹爪反馈应该明显大于空夹时的值，并且抓取后视觉里不应再看到球。例如失败时可能看到：
 
 ```text
-gripper=18.6 holding=no
+PICK_BALL done gripper=10.0 gripper_hold=no ball_visible=yes area=0.075 off=-8 size=152 label=BALL_READY holding=no
 ```
 
 抓住球后通常会看到：
 
 ```text
-holding=yes
+PICK_BALL done gripper=45.4 gripper_hold=yes ball_visible=no area=0.000 off=0 size=0 label=IDLE holding=yes
 ```
 
 完整闭环里如果第一次没夹住，会看到类似日志：
 
 ```text
-grab failed -> CHASE_BALL for visual realign, next pick attempt=2/10
-...
+grab failed -> PICK_BALL immediate retry next attempt=2/10 reason=ball still visible
 -> PICK_BALL attempt=2/10
 PICK_BALL start IK catch sequence attempt=2/10 offset=(-0.0050, 0.0000) grab=(0.1350, -0.0500)
 ```
@@ -375,16 +375,16 @@ shoulder_pan +12
 
 它的作用是把抓取前的肩部水平转动量转回去。实际观察时，这会表现为“夹取动作结束、收机械臂时向右转一下”。
 
-当前 C++ 已经把这个动作改成配置项：
+当前 C++ 已经把这个动作改成配置项，默认开启以贴近 Desktop-Wanderer 原始动作：
 
 ```text
-return_shoulder_pan = 0
+return_shoulder_pan = 1
 ```
 
 - `0`：不执行肩部回正，便于观察是否真的夹住球。
 - `1`：执行肩部回正，行为更接近 Python 原始动作。
 
-如果只是调抓球，建议保持 `0`。等抓取稳定后，如果投放路径需要更居中的机械臂姿态，再改成 `1`。
+如果只是调抓球，可以临时改成 `0`。调完建议恢复为 `1`，否则夹取后的回收轨迹会比 Linux Python 版本更别扭。
 
 底盘停车距离由检测框尺寸控制。日志中 `size=155/156` 表示当前停止时球的像素尺寸。如果整体停车距离需要调整，再改：
 
