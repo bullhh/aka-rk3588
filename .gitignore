@@ -1,0 +1,6 @@
+# CMake build output
+/build/
+
+# Vision test output
+/capture.jpg
+/result.jpg
