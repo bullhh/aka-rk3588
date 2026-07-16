@@ -118,6 +118,7 @@ private:
     static float apply_joint_calibration(const std::string& joint, float value);
     bool load_current_positions();
     bool send_current_targets();
+    bool fail(const std::string& message);
     bool advance_step(const Step& step);
     bool step_reached(const Step& step) const;
     static const char* step_kind_label(Kind kind);

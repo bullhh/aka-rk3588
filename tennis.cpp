@@ -570,17 +570,14 @@ int main(int argc, char** argv)
                 }
                 if (!lekiwi_arm_ctrl->begin_pick(lekiwi_pick_attempt_config)) {
                     dup2(g_saved_stderr, STDERR_FILENO);
-                    printf("[GAME] PICK_BALL begin failed attempt=%zu/%zu offset=(%.4f, %.4f): %s\n",
+                    printf("[GAME] PICK_BALL communication failure attempt=%zu/%zu offset=(%.4f, %.4f): %s\n",
                            lekiwi_pick_retry_index + 1,
                            lekiwi_pick_retry_offsets.size(),
                            log_dx,
                            log_dy,
                            lekiwi_arm_ctrl->last_error().c_str());
-                    dup2(g_devnull, STDERR_FILENO);
-                    lekiwi_arm_ctrl->reset();
-                    lekiwi_move.reset();
-                    game_state = GameState::CHASE_BALL;
-                    continue;
+                    cleanup_and_exit();
+                    return 1;
                 }
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[GAME] PICK_BALL start IK catch sequence attempt=%zu/%zu offset=(%.4f, %.4f) grab=(%.4f, %.4f)\n",
@@ -595,13 +592,10 @@ int main(int argc, char** argv)
 
             if (!lekiwi_arm_ctrl || !lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
                 dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PICK_BALL controller failed -> CHASE_BALL: %s\n",
+                printf("[GAME] PICK_BALL controller failed, stopping: %s\n",
                        lekiwi_arm_ctrl ? lekiwi_arm_ctrl->last_error().c_str() : "missing controller");
-                dup2(g_devnull, STDERR_FILENO);
-                if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
-                lekiwi_move.reset();
-                game_state = GameState::CHASE_BALL;
-                continue;
+                cleanup_and_exit();
+                return 1;
             }
 
             if (lekiwi_arm_ctrl && (++lekiwi_arm_log_tick % 10) == 0) {
@@ -616,6 +610,13 @@ int main(int argc, char** argv)
             if (lekiwi_arm_ctrl->done()) {
                 float gripper_pos = 0.0f;
                 bool gripper_holds = lekiwi_arm_ctrl->verify_grab(&gripper_pos);
+                if (lekiwi_arm_ctrl->failed()) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] PICK_BALL verification failed, stopping: %s\n",
+                           lekiwi_arm_ctrl->last_error().c_str());
+                    cleanup_and_exit();
+                    return 1;
+                }
                 std::vector<detection> post_pick_dets;
                 long post_ti = 0, post_tr = 0, post_to = 0, post_tp = 0;
                 long post_frame_us = 0;
@@ -738,7 +739,13 @@ int main(int argc, char** argv)
             drive_ptr->standby();
             if (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->active() &&
                 !lekiwi_arm_ctrl->done() && !lekiwi_arm_ctrl->failed()) {
-                lekiwi_arm_ctrl->begin_put();
+                if (!lekiwi_arm_ctrl->begin_put()) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] PUT_BALL communication failure, stopping: %s\n",
+                           lekiwi_arm_ctrl->last_error().c_str());
+                    cleanup_and_exit();
+                    return 1;
+                }
                 dup2(g_saved_stderr, STDERR_FILENO);
                 printf("[GAME] PUT_BALL start IK put sequence\n");
                 dup2(g_devnull, STDERR_FILENO);
@@ -746,12 +753,10 @@ int main(int argc, char** argv)
 
             if (!lekiwi_arm_ctrl || !lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
                 dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PUT_BALL controller failed -> CHASE_BALL\n");
-                dup2(g_devnull, STDERR_FILENO);
-                if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
-                lekiwi_move.reset();
-                game_state = GameState::CHASE_BALL;
-                continue;
+                printf("[GAME] PUT_BALL controller failed, stopping: %s\n",
+                       lekiwi_arm_ctrl ? lekiwi_arm_ctrl->last_error().c_str() : "missing controller");
+                cleanup_and_exit();
+                return 1;
             }
 
             if (lekiwi_arm_ctrl && (++lekiwi_arm_log_tick % 10) == 0) {

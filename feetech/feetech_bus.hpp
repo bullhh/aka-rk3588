@@ -73,7 +73,6 @@ private:
     bool write_bytes(const uint8_t* data, size_t len);
     bool read_byte(uint8_t& byte, int timeout_ms);
     bool read_usb_packet(int timeout_ms);
-    bool drain_usb_input(int quiet_timeout_ms = 2, int max_packets = 8);
     void flush_input();
     bool tx_packet(uint8_t id, uint8_t instruction, const std::vector<uint8_t>& params);
     bool rx_status(uint8_t expected_id, std::vector<uint8_t>& params, uint8_t* error_out,

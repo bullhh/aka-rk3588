@@ -516,34 +516,11 @@ bool FeetechBus::read_usb_packet(int timeout_ms) {
     return true;
 }
 
-bool FeetechBus::drain_usb_input(int quiet_timeout_ms, int max_packets) {
-    if (backend_ != Backend::USB_CDC || !usb_handle_) return true;
-    usb_rx_buffer_.clear();
-    usb_rx_offset_ = 0;
-
-    uint8_t tmp[64];
-    bool drained_any = false;
-    for (int i = 0; i < max_packets; i++) {
-        int transferred = 0;
-        int rc = libusb_bulk_transfer(usb_handle_, usb_ep_in_, tmp, sizeof(tmp), &transferred,
-                                      quiet_timeout_ms);
-        if (rc == LIBUSB_ERROR_TIMEOUT || transferred == 0) break;
-        if (rc != 0) {
-            char msg[160];
-            snprintf(msg, sizeof(msg), "usb drain IN ep=0x%02x failed: %s",
-                     usb_ep_in_, libusb_err_name(rc));
-            set_error(msg);
-            return false;
-        }
-        drained_any = true;
-    }
-    if (drained_any) log_debug("drained stale USB CDC input before request");
-    return true;
-}
-
 void FeetechBus::flush_input() {
     if (backend_ == Backend::USB_CDC) {
-        drain_usb_input();
+        // Avoid a timeout-based drain: cancelled IN URBs can remain queued on Starry.
+        usb_rx_buffer_.clear();
+        usb_rx_offset_ = 0;
         return;
     }
     if (fd_ >= 0) tcflush(fd_, TCIFLUSH);
@@ -701,10 +678,8 @@ bool FeetechBus::write_reg(int id, uint8_t addr, const std::vector<uint8_t>& dat
     params.reserve(data.size() + 1);
     params.push_back(addr);
     params.insert(params.end(), data.begin(), data.end());
-    flush_input();
-    if (!tx_packet((uint8_t)id, INST_WRITE, params)) return false;
-    usleep(1000);
-    return true;
+    std::vector<uint8_t> reply;
+    return tx_rx((uint8_t)id, INST_WRITE, params, reply);
 }
 
 bool FeetechBus::read_reg(int id, uint8_t addr, uint8_t len, std::vector<uint8_t>& data) {

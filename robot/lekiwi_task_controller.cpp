@@ -339,28 +339,27 @@ bool LeKiwiArmController::begin_put() {
 bool LeKiwiArmController::load_current_positions() {
     observed_.clear();
     commanded_.clear();
-    bool used_fallback = false;
     for (const auto& name : arm_.joint_names()) {
         float deg = 0.0f;
         if (arm_.get_joint_deg(name, deg)) {
             observed_[name] = apply_joint_calibration(name, deg);
             continue;
         }
-
-        auto target = targets_.find(name);
-        if (target == targets_.end()) {
-            last_error_ = "load current positions failed: " + arm_.last_error();
-            return false;
-        }
-        observed_[name] = target->second;
-        used_fallback = true;
-        fprintf(stderr, "[LeKiwiArmController] using target fallback for %s after read failure: %s\n",
-                name.c_str(), arm_.last_error().c_str());
+        return fail("load current position for " + name + " failed: " + arm_.last_error());
     }
     if (targets_.empty()) targets_ = observed_;
     commanded_ = observed_;
-    if (!used_fallback) last_error_.clear();
+    last_error_.clear();
     return true;
+}
+
+bool LeKiwiArmController::fail(const std::string& message) {
+    last_error_ = message;
+    active_ = false;
+    done_ = false;
+    failed_ = true;
+    fprintf(stderr, "[LeKiwiArmController] %s\n", last_error_.c_str());
+    return false;
 }
 
 float LeKiwiArmController::apply_joint_calibration(const std::string& joint, float value) {
@@ -440,8 +439,7 @@ bool LeKiwiArmController::send_current_targets() {
         commanded_[kv.first] = next;
     }
     if (!arm_.write_degrees(action, 0)) {
-        last_error_ = "write current targets failed: " + arm_.last_error();
-        return false;
+        return fail("write current targets failed: " + arm_.last_error());
     }
     observed_ = commanded_;
     return true;
@@ -540,13 +538,9 @@ bool LeKiwiArmController::tick() {
 
 bool LeKiwiArmController::verify_grab(float* gripper_pos) {
     float pos = 0.0f;
-    bool ok = arm_.get_joint_deg("arm_gripper", pos);
-    if (!ok) {
-        auto target = targets_.find("arm_gripper");
-        if (target == targets_.end()) return false;
-        pos = target->second;
-        fprintf(stderr, "[LeKiwiArmController] using gripper target fallback after read failure: %s\n",
-                arm_.last_error().c_str());
+    if (!arm_.get_joint_deg("arm_gripper", pos)) {
+        if (gripper_pos) *gripper_pos = 0.0f;
+        return fail("verify gripper position failed: " + arm_.last_error());
     }
     if (gripper_pos) *gripper_pos = pos;
     return pos > 25.0f;

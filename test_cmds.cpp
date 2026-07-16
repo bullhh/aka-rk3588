@@ -732,6 +732,7 @@ int cmd_test_feetech(const char* uart_dev, int argc, char** argv)
     }
 
     if (strcmp(cmd, "read") == 0) {
+        bool ok = true;
         for (int id = 1; id <= 9; id++) {
             feetech::MotorStatus st;
             if (bus.read_status(id, st)) {
@@ -739,9 +740,10 @@ int cmd_test_feetech(const char* uart_dev, int argc, char** argv)
                        id, st.position, st.velocity, st.voltage, st.temperature);
             } else {
                 printf("id=%d read failed: %s\n", id, bus.last_error().c_str());
+                ok = false;
             }
         }
-        return 0;
+        return ok ? 0 : 1;
     }
 
     if (strcmp(cmd, "torque-off") == 0) {
@@ -1086,6 +1088,7 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
     }
 
     bool ok = true;
+    std::string command_error;
     if      (strcmp(cmd, "pos") == 0)        ok = arm.grab_pos();
     else if (strcmp(cmd, "grab") == 0)       ok = arm.grab();
     else if (strcmp(cmd, "ik-pick") == 0) {
@@ -1105,11 +1108,14 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
             tick++;
         }
         float gripper = 0.0f;
-        bool holding = ctrl.verify_grab(&gripper);
+        bool holding = false;
+        if (ok && ctrl.done() && !ctrl.failed()) holding = ctrl.verify_grab(&gripper);
+        if (ctrl.failed()) ok = false;
         printf("ik-pick done=%d failed=%d gripper=%.1f holding=%s\n",
                ctrl.done() ? 1 : 0, ctrl.failed() ? 1 : 0,
                gripper, holding ? "yes" : "no");
         ok = ok && ctrl.done() && !ctrl.failed();
+        if (!ok) command_error = ctrl.last_error();
     }
     else if (strcmp(cmd, "release") == 0)    ok = arm.release();
     else if (strcmp(cmd, "release-pos") == 0)ok = arm.release_pos();
@@ -1127,6 +1133,7 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
         return 2;
     }
 
-    printf("test-new-arm %s\n", ok ? "ok" : bus.last_error().c_str());
+    const std::string& error = command_error.empty() ? bus.last_error() : command_error;
+    printf("test-new-arm %s\n", ok ? "ok" : error.c_str());
     return ok ? 0 : 1;
 }
