@@ -177,6 +177,9 @@ calibration ok
 ./run_vision_once.sh
 ```
 
+Linux 下脚本会先编译再运行；Starry 下会直接运行已经部署的 `build/tennis`，因此
+需要先在 Linux 下完成编译和根文件系统同步。脚本默认使用 NPU core 0。
+
 输出：
 
 ```text

@@ -341,7 +341,9 @@ config/lekiwi_pick_config.txt
 ./run_vision_once.sh
 ```
 
-正常情况下生成 `capture.jpg` 和 `result.jpg`。
+同一命令可在 Linux 和 Starry 使用：Linux 会先编译再运行，Starry 会跳过编译并
+运行共享根文件系统中的 `build/tennis`。默认使用 NPU core 0，正常情况下返回0，
+检测一次并生成 `capture.jpg` 和 `result.jpg`。
 
 架空运行安全追球：
 

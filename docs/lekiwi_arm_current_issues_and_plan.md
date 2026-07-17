@@ -59,10 +59,12 @@ Linux TTY、Linux libusb 和 Starry libusb 均已通过20轮实机压力测试�
 
 ### 视觉
 
-以下底层命令在 Starry 下成功，能生成 `capture.jpg` 和 `result.jpg`：
+`run_vision_once.sh` 已改为 POSIX `sh`，Linux 下先编译再运行，Starry 下直接运行
+共享根文件系统中的已有二进制。两端实机均返回0，检测到目标并生成
+`capture.jpg` 和 `result.jpg`；默认固定使用 NPU core 0。
 
 ```bash
-RKNN_CORE_MASK=0 ./build/tennis test-yolo models/tennis.rknn 0
+./run_vision_once.sh
 ```
 
 ## 3. 未解决问题和解决方案
@@ -70,7 +72,6 @@ RKNN_CORE_MASK=0 ./build/tennis test-yolo models/tennis.rknn 0
 | 优先级 | 问题与证据 | 解决方案 |
 | --- | --- | --- |
 | P0 | Starry xHCI 异步 URB 取消不完整，取消的 IN URB 可能吞掉下一次回复 | 实现 Stop Endpoint、Set TR Dequeue Pointer、必要的 Reset Endpoint 和 TRB 回收；增加取消后再次收发测试 |
-| P1 | `run_vision_once.sh` 在 Starry 报 `pipefail` 错误，但底层视觉正常 | 改为 POSIX `sh` 或明确 Bash；加入 `is_starry()`；Starry 只运行已有二进制 |
 | P1 | 缺少 `config/lekiwi_arm_poses.txt`，`pose-list` 失败 | 提交实机确认的默认姿态，或用 `pose-save` 生成 |
 | P2 | 还没有用球验证夹取点和夹爪力度 | 放置固定位置网球连续测试，必要时只微调 `grab_x/grab_y` |
 | P2 | 还没有运行优化后的完整视觉闭环 | 先架空运行，再在开阔场地低速运行并录像 |
@@ -102,7 +103,7 @@ RKNN_CORE_MASK=0 ./build/tennis test-yolo models/tennis.rknn 0
 2. `[已完成]` 三后端各20轮通信压力测试。
 3. `[已完成]` 让通信错误正确传播到动作控制器和退出码。
 4. `[下一步]` 完善 Starry xHCI URB 取消语义。
-5. 修复视觉脚本，补充默认姿态文件。
+5. `[已完成]` 修复视觉脚本；`[下一步]` 补充默认姿态文件。
 6. `[已完成]` 固定机械臂约20 Hz控制和约300 ms GAP。
 7. `[已完成]` 修正标定、HOME、CLEAR、LIFT和腕部连续轨迹。
 8. `[下一步]` 用真实网球验证夹取，再运行安全追球和完整抓取。
