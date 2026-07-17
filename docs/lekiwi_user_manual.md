@@ -281,14 +281,14 @@ config/lekiwi_pick_config.txt
 
 ```text
 ball_stop_size_px = 155
-ball_stop_tolerance_px = 15
+ball_stop_tolerance_px = 5
 ball_center_tolerance_px = 30
 ball_stable_frames = 2
 ```
 
 `ball_stop_size_px` 是球检测框宽、高中的较大值。增大表示机器人更靠近球才停车，
 减小表示更远停车。`ball_stop_tolerance_px` 是上下容差，所以当前距离合格范围是
-`155±15`，即 `140～170` 像素。容差越大越容易停车，但前后位置差异也越大。
+`155±5`，即 `150～160` 像素。容差越大越容易停车，但前后位置差异也越大。
 
 `ball_center_tolerance_px` 是球心与画面目标中心允许的左右误差；当前必须在
 `±30` 像素内。`ball_stable_frames` 表示距离和球心条件必须连续满足多少个检测帧；

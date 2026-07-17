@@ -448,7 +448,10 @@ LeKiwiMoveController::Command LeKiwiMoveController::control_target(const TargetB
         }
         if (position < target_position_ - config_.ball_stop_tolerance_px) {
             stable_count_ = 0;
-            int spd = (position * 8 > target_position_ * 10) ? 8 : 35;
+            // Slow down after the detected ball reaches 80% of the target size.
+            // Keep integer arithmetic so the threshold is deterministic on both
+            // Linux and StarryOS.
+            int spd = (position * 10 > target_position_ * 8) ? 8 : 35;
             return diff_drive_cmd("BALL_FORWARD", spd, spd);
         }
         if (position > target_position_ + config_.ball_stop_tolerance_px) {
