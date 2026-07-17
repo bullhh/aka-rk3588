@@ -7,8 +7,11 @@
 当前硬件约定：
 
 ```text
-机械臂电机：Feetech STS3215，ID 1-6
-三轮底盘电机：Feetech STS3215，ID 7-9
+ID1：肩部水平旋转        ID6：夹爪
+ID2：肩部抬升            ID7：左轮
+ID3：肘部弯曲            ID8：后轮
+ID4：腕部俯仰            ID9：右轮
+ID5：腕部旋转
 Linux 设备节点：/dev/ttyACM0
 Linux/Starry 通用路径：userspace libusb CDC，设备参数使用 auto
 模型：models/tennis.rknn
@@ -180,6 +183,8 @@ scp build/tennis \
 
 交叉编译产物仍要求 rootfs 中存在兼容的 `librknnrt.so`、`libuvc`、`libusb-1.0`
 和 `libturbojpeg`。不确定运行库是否匹配时，优先在开发板 Linux 原生编译。
+如果运行时报 `GLIBC_x.xx not found`，不要替换开发板系统库，直接回到4.1节在开发板
+Linux中重新编译。
 
 ## 5. 让文件进入 StarryOS 可见的 rootfs
 
@@ -190,6 +195,7 @@ cd /home/orangepi/robot/aka-rk3588
 test -x build/tennis
 test -f models/tennis.rknn
 test -f config/lekiwi_calibration.json
+test -f config/lekiwi_pick_config.txt
 sync
 ```
 
@@ -198,7 +204,8 @@ StarryOS 启动后检查：
 
 ```sh
 cd /home/orangepi/robot/aka-rk3588
-ls -l build/tennis models/tennis.rknn config/lekiwi_calibration.json
+ls -l build/tennis models/tennis.rknn \
+  config/lekiwi_calibration.json config/lekiwi_pick_config.txt
 ```
 
 如果 StarryOS 找不到新文件，先回 Linux 检查文件是否写入正确的物理 rootfs，以及
@@ -252,6 +259,17 @@ calibration ok
 ./build/tennis test-new-arm auto calibrate
 ```
 
+首次校准时程序会确认ID1～ID6存在并关闭扭矩。按终端提示，把除连续旋转腕部外的
+各关节和夹爪分别缓慢移动到两个安全端点，确保每个关节都覆盖完整可用范围，然后按
+回车。程序自动计算中点和零位并写入：
+
+```text
+config/lekiwi_calibration.json
+```
+
+校准文件保存原始编码范围和零点，不要用抓球动作参数替代它。校准完成后重新执行
+`calib-check`；失败时不要继续运行机械臂动作。
+
 ### 6.3 测试待机姿态和夹爪
 
 ```bash
@@ -281,13 +299,13 @@ arm_gripper 0：完全关闭
 
 ```text
 HOME
--> 肩部转向
--> 打开夹爪并调整腕部
--> PRE_GRAB
--> GRAB
+-> 按grab_id1～grab_id5确定基础夹球姿态
+-> 打开夹爪，自动计算安全接近轨迹
+-> 应用前后、左右、上下和俯仰偏移
+-> 到达GRAB
 -> 闭合夹爪
--> CLEAR（沿下降路径回到 PRE_GRAB 高度）
--> CARRY（约2秒五次 S 曲线收臂）
+-> CLEAR（沿原下降路径抬离地面）
+-> CARRY（约2秒五次S曲线进入carry_id1～carry_id5）
 -> 保持约0.5秒，确认静止后允许车轮启动
 ```
 
@@ -297,27 +315,82 @@ HOME
 - 肩、肘和腕部连续移动，没有长时间停顿后突然跳动。
 - 夹爪在接近球前打开，到达抓取点后闭合。
 - 抬升时夹爪不碰地面、底盘或相机支架。
+- 有球时最终应看到 `holding=yes`；无球动作测试出现 `holding=no` 属于正常。
 
-常见现象：
+每次开始抓取都会打印解析结果：
+
+```text
+[LeKiwiArmController] grab ids=(-12.0,37.7,42.1,0.2,0.0) \
+offset_cm=(forward=0.0,lateral=0.0,height=0.0) pitch_offset=0.0 \
+resolved=(pan=-12.0,x=0.1199,y=-0.0600,pre_y=0.1211,pitch=80.0)
+```
+
+修改配置后先检查这行，确认 `ids` 和 `offset_cm` 是本次输入，`resolved` 是程序实际
+使用的最终目标。若日志仍是旧值，说明旧进程没有退出或修改的不是当前目录下的文件。
+
+#### 夹球与收球基础姿态
+
+参数位于 `config/lekiwi_pick_config.txt`，角度均为标定后的度数，不是0～4095原始值：
+
+```bash
+cd /home/orangepi/robot/aka-rk3588
+vi config/lekiwi_pick_config.txt
+```
+
+```text
+grab_id1_deg ～ grab_id5_deg    夹爪闭合时的ID1～ID5基础姿态
+carry_id1_deg ～ carry_id5_deg  抬球后、启动车轮前的ID1～ID5收臂姿态
+```
+
+ID6夹爪不记录到两组姿态中，继续使用：
+
+```text
+gripper_open_delta_deg = 60
+gripper_close_delta_deg = -60
+```
+
+当前CARRY时间参数：
+
+```text
+carry_duration_ms = 2000   # 收臂S曲线约2秒
+carry_settle_ms = 500      # 到位后再稳定约0.5秒
+```
+
+优先使用下面的位置偏移解决现场误差。只有零偏移仍无法得到合理姿态时，才重新手动
+记录并替换 `grab_id*`；不要用 `carry_id*` 直接夹地面上的球。
+
+#### 快速调整夹球位置
+
+| 现象 | 修改方法 |
+| --- | --- |
+| 夹爪伸过球 | 减小 `grab_forward_offset_cm`，例如 `0 → -0.5` |
+| 夹爪够不到球 | 增大 `grab_forward_offset_cm`，例如 `0 → +0.5` |
+| 夹爪在球左边 | 减小 `grab_lateral_offset_cm`，使夹爪向右 |
+| 夹爪在球右边 | 增大 `grab_lateral_offset_cm`，使夹爪向左 |
+| 夹爪比球低 | 增大 `grab_height_offset_cm`，例如 `0 → +0.5` |
+| 夹爪比球高 | 减小 `grab_height_offset_cm`，例如 `0 → -0.5` |
+| 夹爪俯仰不合适 | 每次调整 `grab_pitch_offset_deg` 约 `5` 度 |
+
+三个位置偏移的单位均为厘米。程序自动把前后、上下换算为ID2/ID3，把左右换算为
+ID1，并补偿ID4保持原夹爪朝向。建议每次只改一个参数、每次只改0.5厘米。
+
+修改后不需要重新编译，必须退出旧进程并重新运行：
+
+```bash
+./build/tennis test-new-arm auto ik-pick
+```
+
+#### 常见异常
 
 | 现象 | 优先检查 |
 | --- | --- |
 | 动作一顿一顿 | `tick()` 是否被视觉帧率限制 |
 | 某阶段停几秒 | `GAP` 是否按视觉帧计数 |
-| 夹爪伸过球/够不到 | 调整 `grab_forward_offset_cm`，负数收近、正数伸远 |
-| 夹爪偏左/偏右 | 调整 `grab_lateral_offset_cm`，正数向左、负数向右 |
-| 夹爪过低/过高 | 调整 `grab_height_offset_cm`，正数升高、负数降低 |
-| 夹爪俯仰不合适 | 每次调整 `grab_pitch_offset_deg` 约 `5` 度 |
-| 抬升姿态突变 | 检查 `lift_x/lift_y` 和 `wrist_lift_pitch` |
+| 修改参数但动作没变 | 检查启动日志中的 `offset_cm`，确认文件路径和旧进程 |
+| 零偏移姿态不合理 | 重新记录 `grab_id1_deg～grab_id5_deg` |
+| 收臂停止姿态不合理 | 检查 `carry_id1_deg～carry_id5_deg` |
+| 收臂太快或太慢 | 调整 `carry_duration_ms`，不要直接提高控制频率 |
 | USB 超时或校验错误 | 降低更新频率，检查供电、USB和线缆 |
-
-参数位于：
-
-```text
-config/lekiwi_pick_config.txt
-```
-
-修改后不需要重新编译，重新运行 `ik-pick` 即可。每次只调整一个参数。
 
 ### 6.5 测试三轮底盘
 
@@ -354,6 +427,19 @@ config/lekiwi_pick_config.txt
 正常现象是出现 `LEKIWI_CHASE`，确认控制输出后打印 `STOP_AFTER_CHASE` 并停车，
 不会进入抓球和找桶。
 
+停车参数也在 `config/lekiwi_pick_config.txt`：
+
+| 参数 | 当前值与准确含义 | 增减效果 |
+| --- | --- | --- |
+| `ball_stop_size_px` | `155`；球检测框宽、高中的较大值 | 增大：更靠近球停车；减小：更远停车 |
+| `ball_stop_tolerance_px` | `15`；允许 `155±15`，即140～170像素 | 增大：容易停车但前后误差大；减小：距离一致但可能反复调整 |
+| `ball_center_tolerance_px` | `30`；球心允许偏离目标中心±30像素 | 增大：容易抓取但左右误差大；减小：对得更正但可能左右摆动 |
+| `ball_stable_frames` | `2`；距离和球心条件连续满足2帧 | 增大：过滤误检但等待更久 |
+
+停车距离不对时先调 `ball_stop_size_px`，不要立即用机械臂前后偏移补偿。停车位置已经
+稳定但夹爪仍有小误差时，再调三个 `grab_*_offset_cm`。当前Starry约2.3fps，连续2帧
+约需0.9秒。
+
 StarryOS 下脚本自动使用 `RKNN_CORE_MASK=0`。当前不要用三核 NPU 执行真实闭环，
 因为三核模式曾出现错误 bbox。
 
@@ -380,16 +466,22 @@ PUT_BALL done
 出现以下情况应立即停止：底盘在机械臂动作期间仍移动、机械臂撞限位、同一步长时间
 不前进、舵机抖动或过热，以及连续 USB timeout/checksum/status ID 错误。
 
-## 7. 第一阶段流畅度调试方法
+## 7. 推荐调参和记录方法
 
 当前动作算法参考 Desktop-Wanderer。机械臂动作已固定为约20 Hz，GAP约300 ms，
 HOME使用关节空间缓启动，夹球后先CLEAR，再以关节空间五次 S 曲线进入CARRY。
 
-1. 运行 `test-new-arm auto ik-pick`，录像并记录总时长。
-2. 在完整流程中录像同一机械臂阶段。
-3. 若完整流程与独立测试节奏不同，检查 `PICK_BALL/PUT_BALL` 是否仍走固定周期循环。
-4. 当前保持20 Hz；第一阶段不继续提高频率。
-5. `GAP` 应保持约300 ms，不能乘上视觉帧间隔。
+1. 先固定球和车的位置，运行 `test-new-arm auto ik-pick`。
+2. 按“前后→左右→上下→俯仰”顺序，每次只调整一个参数并录像。
+3. 单独动作能够夹球后，再运行安全追球，确认停车尺寸和球心误差。
+4. 最后测试完整流程，并对比独立动作和完整流程的节奏。
+5. 当前保持20 Hz；不要用提高频率掩盖姿态或停车位置问题。
+6. `GAP` 应保持约300 ms，不能乘上视觉帧间隔。
+
+完整闭环抓取失败时会尝试多组前后/高度偏移。某一组成功后，程序会把成功的
+`grab_forward_offset_cm` 和 `grab_height_offset_cm` 写回配置文件，但不会覆盖
+`grab_id*` 和 `carry_id*`。测试前后可用 `git diff -- config/lekiwi_pick_config.txt`
+检查自动保存结果。
 
 建议每次记录：
 
@@ -399,6 +491,10 @@ HOME使用关节空间缓启动，夹球后先CLEAR，再以关节空间五次 S
 提交：
 动作更新周期：
 参数修改：
+启动日志中的 ids：
+启动日志中的 offset_cm：
+启动日志中的 resolved：
+BALL_READY 时 size/off：
 ik-pick 总时长：
 是否流畅：
 是否成功夹球：
