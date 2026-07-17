@@ -590,21 +590,27 @@ int main(int argc, char** argv)
                 dup2(g_devnull, STDERR_FILENO);
             }
 
-            if (!lekiwi_arm_ctrl || !lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PICK_BALL controller failed, stopping: %s\n",
-                       lekiwi_arm_ctrl ? lekiwi_arm_ctrl->last_error().c_str() : "missing controller");
-                cleanup_and_exit();
-                return 1;
-            }
-
-            if (lekiwi_arm_ctrl && (++lekiwi_arm_log_tick % 10) == 0) {
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PICK_BALL step=%zu/%zu %s\n",
-                       lekiwi_arm_ctrl->step_index() + 1,
-                       lekiwi_arm_ctrl->step_count(),
-                       lekiwi_arm_ctrl->current_step_label());
-                dup2(g_devnull, STDERR_FILENO);
+            while (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->done()) {
+                if (g_stop_requested) {
+                    cleanup_and_exit();
+                    return 0;
+                }
+                if (!lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] PICK_BALL controller failed, stopping: %s\n",
+                           lekiwi_arm_ctrl->last_error().c_str());
+                    cleanup_and_exit();
+                    return 1;
+                }
+                if ((++lekiwi_arm_log_tick % 10) == 0) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] PICK_BALL step=%zu/%zu %s\n",
+                           lekiwi_arm_ctrl->step_index() + 1,
+                           lekiwi_arm_ctrl->step_count(),
+                           lekiwi_arm_ctrl->current_step_label());
+                    dup2(g_devnull, STDERR_FILENO);
+                }
+                if (!lekiwi_arm_ctrl->done()) usleep(50000);
             }
 
             if (lekiwi_arm_ctrl->done()) {
@@ -751,21 +757,27 @@ int main(int argc, char** argv)
                 dup2(g_devnull, STDERR_FILENO);
             }
 
-            if (!lekiwi_arm_ctrl || !lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PUT_BALL controller failed, stopping: %s\n",
-                       lekiwi_arm_ctrl ? lekiwi_arm_ctrl->last_error().c_str() : "missing controller");
-                cleanup_and_exit();
-                return 1;
-            }
-
-            if (lekiwi_arm_ctrl && (++lekiwi_arm_log_tick % 10) == 0) {
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PUT_BALL step=%zu/%zu %s\n",
-                       lekiwi_arm_ctrl->step_index() + 1,
-                       lekiwi_arm_ctrl->step_count(),
-                       lekiwi_arm_ctrl->current_step_label());
-                dup2(g_devnull, STDERR_FILENO);
+            while (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->done()) {
+                if (g_stop_requested) {
+                    cleanup_and_exit();
+                    return 0;
+                }
+                if (!lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] PUT_BALL controller failed, stopping: %s\n",
+                           lekiwi_arm_ctrl->last_error().c_str());
+                    cleanup_and_exit();
+                    return 1;
+                }
+                if ((++lekiwi_arm_log_tick % 10) == 0) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] PUT_BALL step=%zu/%zu %s\n",
+                           lekiwi_arm_ctrl->step_index() + 1,
+                           lekiwi_arm_ctrl->step_count(),
+                           lekiwi_arm_ctrl->current_step_label());
+                    dup2(g_devnull, STDERR_FILENO);
+                }
+                if (!lekiwi_arm_ctrl->done()) usleep(50000);
             }
 
             if (lekiwi_arm_ctrl->done()) {

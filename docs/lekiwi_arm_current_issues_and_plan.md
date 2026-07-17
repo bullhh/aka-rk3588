@@ -4,7 +4,8 @@
 
 三轮机器人基本功能已跑通。Feetech userspace libusb 单播写 ACK 残留问题已经修复，
 Linux TTY、Linux libusb 和 Starry libusb 均已通过20轮实机压力测试。通信错误传播
-也已修复；当前下一个内核问题是完善 Starry xHCI 异步 URB 取消语义。
+也已修复。机械臂第一阶段轨迹已经改为固定控制周期、关节空间平滑回 HOME，并避开
+GRAB 到 LIFT 之间的奇异区；下一步是现场夹球和完整闭环验证。
 
 | 模块 | 状态 | 结论 |
 | --- | --- | --- |
@@ -13,10 +14,10 @@ Linux TTY、Linux libusb 和 Starry libusb 均已通过20轮实机压力测试�
 | Linux/Starry libusb CDC | 写 ACK 已修复 | 20轮压力测试通过 |
 | Starry USB 跨进程重开 | 已修复 | 可用 |
 | 校准、待机姿态、夹爪 | 已实现 | 可用 |
-| 独立 `ik-pick` | 三后端各20轮通过 | 通信错误可停止动作并返回失败 |
+| 独立 `ik-pick` | 通信与13阶段轨迹通过 | Linux/Starry动作节奏一致 |
 | UVC + 单核 NPU | 已实现 | 可用 |
 | 三核 NPU | 已实现驱动 | bbox 不可靠，禁用 |
-| 完整追球、抓取、放球 | 暂停 | 等待通信 P0 通过 |
+| 完整追球、抓取、放球 | 待验证 | 通信和独立动作已具备条件 |
 
 ## 2. 已实现并验证
 
@@ -33,6 +34,12 @@ Linux TTY、Linux libusb 和 Starry libusb 均已通过20轮实机压力测试�
 - 已删除初始化位置和夹爪验证的目标角度 fallback；轨迹写入失败会设置 controller
   failed。协议模拟验证初始读取、动作写入、夹爪验证三种故障均返回退出码1。
 - 完整闭环遇到机械臂通信失败会停车、清理资源并以非零退出，不再回到追球状态继续运行。
+- 读取和写入使用互逆的关节标定，目标角度、反馈角度和舵机角度处于同一坐标系。
+- 任意起始姿态先以低增益缓升方式在关节空间回 HOME，不再沿危险笛卡尔直线回位。
+- 夹球后先回到 PRE_GRAB 高度，再移动到 LIFT，避免经过二连杆原点附近的奇异区。
+- LIFT 期间腕部从抓取角度连续插值到运输角度，不再超过范围后反向跳变。
+- 独立动作固定约20 Hz，GAP约300 ms；Linux TTY、Linux libusb 和 Starry libusb
+  新轨迹各连续3轮通过，单轮约8.6-9秒，通信错误为0。
 - `calib-check`、`pos`、夹爪 60°/0°、`torque-off` 成功。
 - `test-base auto stop` 成功；方向运动需确认机器人架空后再测。
 - 已有校准、IK、HOME/PRE_GRAB/GRAB/LIFT 和运输姿态。
@@ -59,9 +66,8 @@ RKNN_CORE_MASK=0 ./build/tennis test-yolo models/tennis.rknn 0
 | P0 | Starry xHCI 异步 URB 取消不完整，取消的 IN URB 可能吞掉下一次回复 | 实现 Stop Endpoint、Set TR Dequeue Pointer、必要的 Reset Endpoint 和 TRB 回收；增加取消后再次收发测试 |
 | P1 | `run_vision_once.sh` 在 Starry 报 `pipefail` 错误，但底层视觉正常 | 改为 POSIX `sh` 或明确 Bash；加入 `is_starry()`；Starry 只运行已有二进制 |
 | P1 | 缺少 `config/lekiwi_arm_poses.txt`，`pose-list` 失败 | 提交实机确认的默认姿态，或用 `pose-save` 生成 |
-| P2 | 完整闭环的机械臂 `tick()` 受 2-3 FPS 视觉循环限制 | 通信稳定后固定 20 Hz 控制，稳定后再尝试 25/50 Hz |
-| P2 | GAP 随视觉帧率变化 | 按真实时间或固定控制周期实现 300-400 ms GAP |
-| P2 | 姿态、角度和 Kp 仍需微调 | 控制频率稳定后，每次只改一个参数并录像对比 |
+| P2 | 还没有用球验证夹取点和夹爪力度 | 放置固定位置网球连续测试，必要时只微调 `grab_x/grab_y` |
+| P2 | 还没有运行优化后的完整视觉闭环 | 先架空运行，再在开阔场地低速运行并录像 |
 | P3 | Starry 三核 NPU bbox 不可靠 | 当前固定 `RKNN_CORE_MASK=0`，三核问题单独修复 |
 
 ## 4. 通信 P0 的稳定实现要求
@@ -91,9 +97,9 @@ RKNN_CORE_MASK=0 ./build/tennis test-yolo models/tennis.rknn 0
 3. `[已完成]` 让通信错误正确传播到动作控制器和退出码。
 4. `[下一步]` 完善 Starry xHCI URB 取消语义。
 5. 修复视觉脚本，补充默认姿态文件。
-6. 固定机械臂 20 Hz 控制和 GAP 时间。
-7. 最后调整角度、坐标和 Kp。
-8. 全部通过后再运行安全追球和完整抓取。
+6. `[已完成]` 固定机械臂约20 Hz控制和约300 ms GAP。
+7. `[已完成]` 修正标定、HOME、CLEAR、LIFT和腕部连续轨迹。
+8. `[下一步]` 用真实网球验证夹取，再运行安全追球和完整抓取。
 
 建议分开提交：
 

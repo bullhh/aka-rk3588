@@ -259,7 +259,7 @@ LeKiwiArmController::LeKiwiArmController(FeetechArm& arm) : arm_(arm) {
 std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
     const LeKiwiPickConfig& config) {
     std::vector<Step> seq = {
-        {Kind::MOVE_TO, "", config.home_x, config.home_y},
+        {Kind::HOME, "", config.home_x, config.home_y},
         {Kind::JOINT_DELTA, "arm_shoulder_pan", config.shoulder_pan_delta, 0.0f},
         {Kind::JOINT_DELTA, "arm_gripper", config.gripper_open_delta, 0.0f},
         {Kind::WRIST_FLEX, "arm_wrist_flex", config.wrist_pick_pitch, 0.0f},
@@ -268,7 +268,8 @@ std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
         {Kind::GAP, "", 0.0f, 0.0f},
         {Kind::JOINT_DELTA, "arm_gripper", config.gripper_close_delta, 0.0f},
         {Kind::GAP, "", 0.0f, 0.0f},
-        {Kind::MOVE_TO, "", config.lift_x, config.lift_y},
+        {Kind::MOVE_TO, "clear", config.pre_grab_x, config.pre_grab_y},
+        {Kind::MOVE_TO, "lift", config.lift_x, config.lift_y},
         {Kind::WRIST_FLEX, "arm_wrist_flex", config.wrist_lift_pitch, 0.0f},
     };
     if (config.return_shoulder_pan) {
@@ -302,6 +303,8 @@ void LeKiwiArmController::reset() {
     current_x_ = config_.home_x;
     current_y_ = config_.home_y;
     pitch_ = config_.wrist_pick_pitch;
+    move_start_distance_ = 0.0f;
+    move_start_wrist_ = 0.0f;
     targets_ = {
         {"arm_shoulder_pan", 0.0f},
         {"arm_shoulder_lift", -31.70f},
@@ -349,6 +352,8 @@ bool LeKiwiArmController::load_current_positions() {
     }
     if (targets_.empty()) targets_ = observed_;
     commanded_ = observed_;
+    forward_kinematics(observed_["arm_shoulder_lift"],
+                       observed_["arm_elbow_flex"], current_x_, current_y_);
     last_error_.clear();
     return true;
 }
@@ -374,6 +379,22 @@ float LeKiwiArmController::apply_joint_calibration(const std::string& joint, flo
     };
     for (const auto& c : coeffs) {
         if (joint == c.joint) return (value - c.offset) * c.scale;
+    }
+    return value;
+}
+
+float LeKiwiArmController::remove_joint_calibration(const std::string& joint, float value) {
+    struct Coeff { const char* joint; float offset; float scale; };
+    static const Coeff coeffs[] = {
+        {"arm_shoulder_pan", 6.0f, 1.0f},
+        {"arm_shoulder_lift", 2.0f, 0.97f},
+        {"arm_elbow_flex", 0.0f, 1.05f},
+        {"arm_wrist_flex", 0.0f, 0.94f},
+        {"arm_wrist_roll", 0.0f, 0.5f},
+        {"arm_gripper", 0.0f, 1.0f},
+    };
+    for (const auto& c : coeffs) {
+        if (joint == c.joint) return value / c.scale + c.offset;
     }
     return value;
 }
@@ -420,28 +441,61 @@ void LeKiwiArmController::inverse_kinematics(float x,
     elbow_flex = joint3 * 180.0f / (float)M_PI - 90.0f;
 }
 
+void LeKiwiArmController::forward_kinematics(float shoulder_lift,
+                                             float elbow_flex,
+                                             float& x,
+                                             float& y) {
+    const float l1 = 0.1159f;
+    const float l2 = 0.1350f;
+    const float theta1_offset = std::atan2(0.028f, 0.11257f);
+    const float theta2_offset = std::atan2(0.0052f, 0.1349f) + theta1_offset;
+    const float theta1 = (90.0f - shoulder_lift) * (float)M_PI / 180.0f - theta1_offset;
+    const float theta2 = (elbow_flex + 90.0f) * (float)M_PI / 180.0f - theta2_offset;
+    x = l1 * std::cos(theta1) + l2 * std::cos(theta1 - theta2);
+    y = l1 * std::sin(theta1) + l2 * std::sin(theta1 - theta2);
+}
+
 bool LeKiwiArmController::send_current_targets() {
+    std::map<std::string, float> positions;
+    if (!arm_.get_joint_degs(positions)) {
+        return fail("read current positions failed: " + arm_.last_error());
+    }
+
     std::map<std::string, float> action;
-    constexpr float kArmKp = 0.55f;
-    constexpr float kGripperKp = 0.8f;
+    float arm_kp = 0.55f;
+    float gripper_kp = 0.8f;
+    if (step_index_ < sequence_.size() && sequence_[step_index_].kind == Kind::HOME) {
+        constexpr float kStartupKp = 0.04f;
+        constexpr float kHomeKp = 0.50f;
+        constexpr int kRampTicks = 20;
+        float ramp = std::min(1.0f, step_hold_ticks_ / (float)kRampTicks);
+        arm_kp = kStartupKp + (kHomeKp - kStartupKp) * ramp;
+        gripper_kp = arm_kp;
+    }
     for (const auto& kv : targets_) {
-        float current = kv.second;
-        auto it = commanded_.find(kv.first);
-        if (it != commanded_.end()) current = it->second;
-        else {
-            auto obs = observed_.find(kv.first);
-            if (obs != observed_.end()) current = obs->second;
-        }
+        auto it = positions.find(kv.first);
+        if (it == positions.end()) continue;
+        float current = apply_joint_calibration(kv.first, it->second);
+        observed_[kv.first] = current;
         float error = kv.second - current;
-        float kp = (kv.first == "arm_gripper") ? kGripperKp : kArmKp;
+        float kp = (kv.first == "arm_gripper") ? gripper_kp : arm_kp;
         float next = current + kp * error;
+        bool homing = step_index_ < sequence_.size() &&
+                      sequence_[step_index_].kind == Kind::HOME;
+        if (homing && kv.first != "arm_gripper" && step_hold_ticks_ >= 20 &&
+            std::abs(error) < 10.0f) {
+            next = kv.second;
+        }
         action[kv.first] = next;
         commanded_[kv.first] = next;
     }
-    if (!arm_.write_degrees(action, 0)) {
+    std::map<std::string, float> servo_action;
+    for (const auto& kv : action) {
+        servo_action[kv.first] = remove_joint_calibration(kv.first, kv.second);
+    }
+    if (!arm_.write_degrees(servo_action, 0)) {
         return fail("write current targets failed: " + arm_.last_error());
     }
-    observed_ = commanded_;
     return true;
 }
 
@@ -452,17 +506,45 @@ bool LeKiwiArmController::advance_step(const Step& step) {
             step_hold_ticks_ = 0;
             return true;
         }
-        usleep(50000);
         return false;
     }
 
     gap_ticks_ = 0;
+    if (step.kind == Kind::HOME) {
+        step_hold_ticks_++;
+        if (!send_current_targets()) return false;
+        float arm_error = 0.0f;
+        float gripper_error = 0.0f;
+        for (const auto& target : targets_) {
+            auto current = observed_.find(target.first);
+            if (current == observed_.end()) continue;
+            float error = std::abs(target.second - current->second);
+            if (target.first == "arm_gripper") gripper_error = error;
+            else arm_error += error;
+        }
+        if (arm_error < 5.0f && gripper_error < 12.0f) {
+            current_x_ = step.a;
+            current_y_ = step.b;
+            return true;
+        }
+        if (step_hold_ticks_ >= 100) {
+            return fail("return to HOME timed out, arm error=" + std::to_string(arm_error) +
+                        ", gripper error=" + std::to_string(gripper_error));
+        }
+        return false;
+    }
+
     if (step.kind == Kind::MOVE_TO) {
         float target_x = step.a;
         float target_y = step.b;
         float err_x = target_x - current_x_;
         float err_y = target_y - current_y_;
         float dist = std::sqrt(err_x * err_x + err_y * err_y);
+        if (!step_initialized_) {
+            move_start_distance_ = dist;
+            move_start_wrist_ = targets_["arm_wrist_flex"];
+            step_initialized_ = true;
+        }
         float step_size = 0.0f;
         if (dist < 0.0005f) {
             step_size = 0.0f;
@@ -490,15 +572,33 @@ bool LeKiwiArmController::advance_step(const Step& step) {
         step_hold_ticks_ = 0;
     }
 
-    targets_["arm_wrist_flex"] =
-        -targets_["arm_shoulder_lift"] - targets_["arm_elbow_flex"] + pitch_;
+    if (step.kind == Kind::MOVE_TO && step.joint == "lift") {
+        float final_shoulder = 0.0f, final_elbow = 0.0f;
+        inverse_kinematics(step.a, step.b, final_shoulder, final_elbow);
+        float final_wrist = -final_shoulder - final_elbow + config_.wrist_lift_pitch;
+        final_wrist = std::max(-100.0f, std::min(100.0f, final_wrist));
+        float remaining = std::sqrt((step.a - current_x_) * (step.a - current_x_) +
+                                    (step.b - current_y_) * (step.b - current_y_));
+        float progress = move_start_distance_ > 1.0e-6f
+            ? 1.0f - remaining / move_start_distance_ : 1.0f;
+        progress = std::max(0.0f, std::min(1.0f, progress));
+        targets_["arm_wrist_flex"] =
+            move_start_wrist_ + progress * (final_wrist - move_start_wrist_);
+    } else {
+        float wrist = -targets_["arm_shoulder_lift"] - targets_["arm_elbow_flex"] + pitch_;
+        targets_["arm_wrist_flex"] = std::max(-100.0f, std::min(100.0f, wrist));
+    }
 
     if (!send_current_targets()) return false;
     if (step.kind == Kind::JOINT_DELTA || step.kind == Kind::WRIST_FLEX) {
         int hold = (step.joint == "arm_gripper") ? 8 : 4;
         return ++step_hold_ticks_ >= hold;
     }
-    return step_reached(step);
+    bool reached = step_reached(step);
+    if (reached && step.kind == Kind::MOVE_TO && step.joint == "lift") {
+        pitch_ = config_.wrist_lift_pitch;
+    }
+    return reached;
 }
 
 bool LeKiwiArmController::step_reached(const Step& step) const {
@@ -548,6 +648,7 @@ bool LeKiwiArmController::verify_grab(float* gripper_pos) {
 
 const char* LeKiwiArmController::step_kind_label(Kind kind) {
     switch (kind) {
+        case Kind::HOME:        return "home";
         case Kind::MOVE_TO:     return "move_to";
         case Kind::JOINT_DELTA: return "joint_delta";
         case Kind::WRIST_FLEX:  return "wrist_flex";

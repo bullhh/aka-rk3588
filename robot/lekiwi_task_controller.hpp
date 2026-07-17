@@ -99,6 +99,7 @@ public:
 
 private:
     enum class Kind {
+        HOME,
         MOVE_TO,
         JOINT_DELTA,
         WRIST_FLEX,
@@ -115,7 +116,9 @@ private:
     static std::vector<Step> pick_sequence(const LeKiwiPickConfig& config);
     static std::vector<Step> put_sequence(const LeKiwiPickConfig& config);
     static void inverse_kinematics(float x, float y, float& shoulder_lift, float& elbow_flex);
+    static void forward_kinematics(float shoulder_lift, float elbow_flex, float& x, float& y);
     static float apply_joint_calibration(const std::string& joint, float value);
+    static float remove_joint_calibration(const std::string& joint, float value);
     bool load_current_positions();
     bool send_current_targets();
     bool fail(const std::string& message);
@@ -136,6 +139,8 @@ private:
     float current_x_ = 0.0989f;
     float current_y_ = 0.125f;
     float pitch_ = 80.0f;
+    float move_start_distance_ = 0.0f;
+    float move_start_wrist_ = 0.0f;
     std::map<std::string, float> targets_;
     std::map<std::string, float> observed_;
     std::map<std::string, float> commanded_;
