@@ -428,7 +428,6 @@ std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
         {Kind::JOINT_TARGET, "arm_shoulder_pan", target.pan, 0.0f},
         {Kind::JOINT_DELTA, "arm_gripper", config.gripper_open_delta_deg, 0.0f},
         {Kind::JOINT_TARGET, "arm_wrist_roll", config.grab_id5_deg, 0.0f},
-        {Kind::WRIST_FLEX, "arm_wrist_flex", target.pitch, 0.0f},
         {Kind::MOVE_TO, "", target.x, target.pre_y},
         {Kind::MOVE_TO, "", target.x, target.y},
         {Kind::GAP, "", 0.0f, 0.0f},
@@ -491,6 +490,8 @@ bool LeKiwiArmController::begin_pick(const LeKiwiPickConfig& config) {
     config_ = config;
     reset();
     config_ = config;
+    pitch_ = config_.grab_id2_deg + config_.grab_id3_deg +
+             config_.grab_id4_deg + config_.grab_pitch_offset_deg;
     sequence_ = pick_sequence(config_);
     active_ = true;
     return load_current_positions();
@@ -736,7 +737,9 @@ bool LeKiwiArmController::advance_step(const Step& step) {
         progress = std::max(0.0f, std::min(1.0f, progress));
         targets_["arm_wrist_flex"] =
             move_start_wrist_ + progress * (final_wrist - move_start_wrist_);
-    } else {
+    } else if (step.kind == Kind::MOVE_TO || step.kind == Kind::WRIST_FLEX) {
+        // Keep the wrist orientation coupled to shoulder/elbow motion. Do not
+        // force a temporary wrist-only pose while the arm is still at HOME.
         float wrist = -targets_["arm_shoulder_lift"] - targets_["arm_elbow_flex"] + pitch_;
         targets_["arm_wrist_flex"] = std::max(-100.0f, std::min(100.0f, wrist));
     }
@@ -796,7 +799,11 @@ bool LeKiwiArmController::step_reached(const Step& step) const {
             if (target == targets_.end() || current == observed_.end()) return false;
             arm_error += std::abs(target->second - current->second);
         }
-        return arm_error < 5.0f;
+        // Small static errors are expected on the real arm. Keep the total
+        // bound consistent with the 6-degree final-target threshold used by
+        // send_current_targets(), instead of failing at an arbitrary 5/5.1
+        // boundary after the Cartesian target has already been reached.
+        return arm_error < 6.0f;
     }
     if (step.kind == Kind::JOINT_DELTA || step.kind == Kind::JOINT_TARGET ||
         step.kind == Kind::WRIST_FLEX) {
