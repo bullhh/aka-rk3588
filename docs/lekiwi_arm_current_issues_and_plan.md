@@ -73,7 +73,7 @@ Linux TTY、Linux libusb 和 Starry libusb 均已通过20轮实机压力测试�
 | --- | --- | --- |
 | P0 | Starry xHCI 异步 URB 取消不完整，取消的 IN URB 可能吞掉下一次回复 | 实现 Stop Endpoint、Set TR Dequeue Pointer、必要的 Reset Endpoint 和 TRB 回收；增加取消后再次收发测试 |
 | P1 | 缺少 `config/lekiwi_arm_poses.txt`，`pose-list` 失败 | 提交实机确认的默认姿态，或用 `pose-save` 生成 |
-| P2 | 还没有用球验证夹取点和夹爪力度 | 放置固定位置网球连续测试，必要时只微调 `grab_x/grab_y` |
+| P2 | 还没有用球验证夹取点和夹爪力度 | 放置固定位置网球连续测试，必要时只微调三个 `grab_*_offset_cm` |
 | P2 | 还没有运行优化后的完整视觉闭环 | 先架空运行，再在开阔场地低速运行并录像 |
 | P3 | Starry 三核 NPU bbox 不可靠 | 当前固定 `RKNN_CORE_MASK=0`，三核问题单独修复 |
 

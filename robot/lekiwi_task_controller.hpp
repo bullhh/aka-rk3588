@@ -1,6 +1,7 @@
 #ifndef ROBOT_LEKIWI_TASK_CONTROLLER_HPP
 #define ROBOT_LEKIWI_TASK_CONTROLLER_HPP
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <vector>
@@ -9,34 +10,43 @@
 #include "robot/feetech_arm.hpp"
 
 struct LeKiwiPickConfig {
+    // Recorded arm poses use calibrated degrees for Feetech IDs 1..5.
+    float grab_id1_deg = -12.0f;
+    float grab_id2_deg = 37.7f;
+    float grab_id3_deg = 42.1f;
+    float grab_id4_deg = 0.2f;
+    float grab_id5_deg = 0.0f;
+    float grab_forward_offset_cm = 0.0f;
+    float grab_lateral_offset_cm = 0.0f;
+    float grab_height_offset_cm = 0.0f;
+    float grab_pitch_offset_deg = 0.0f;
+    float carry_id1_deg = -11.3f;
+    float carry_id2_deg = -18.3f;
+    float carry_id3_deg = -45.0f;
+    float carry_id4_deg = 51.8f;
+    float carry_id5_deg = 0.1f;
+    float gripper_open_delta_deg = 60.0f;
+    float gripper_close_delta_deg = -60.0f;
+    int carry_duration_ms = 2000;
+    int carry_settle_ms = 500;
+    int ball_stop_size_px = 155;
+    int ball_stop_tolerance_px = 15;
+    int ball_center_tolerance_px = 30;
+    int ball_stable_frames = 2;
+
+    // Internal trajectory geometry. These are intentionally not part of the
+    // normal user-facing tuning file.
     float home_x = 0.0989f;
     float home_y = 0.1250f;
-    float pre_grab_x = 0.1400f;
-    float pre_grab_y = 0.1211f;
-    float grab_x = 0.1400f;
-    float grab_y = -0.0500f;
+    float pre_grab_clearance_m = 0.1811f;
     float lift_x = -0.1000f;
     float lift_y = 0.2000f;
-    float shoulder_pan_delta = -12.0f;
-    float gripper_open_delta = 60.0f;
-    float gripper_close_delta = -60.0f;
-    float wrist_pick_pitch = 80.0f;
     float wrist_lift_pitch = -20.0f;
-    float carry_shoulder_pan = -11.3f;
-    float carry_shoulder_lift = -18.3f;
-    float carry_elbow_flex = -45.0f;
-    float carry_wrist_flex = 51.8f;
-    float carry_wrist_roll = 0.1f;
-    int carry_duration_ticks = 40;
-    int carry_settle_ticks = 10;
-    int return_shoulder_pan = 1;
-    int ball_target_size = 0;
-    int ball_size_tolerance = 10;
-    int ball_center_tolerance = 12;
-    int stable_frames = 10;
 
     bool load(const std::string& path = "config/lekiwi_pick_config.txt");
     bool save(const std::string& path = "config/lekiwi_pick_config.txt") const;
+    int carry_duration_ticks() const { return std::max(1, (carry_duration_ms + 49) / 50); }
+    int carry_settle_ticks() const { return std::max(0, (carry_settle_ms + 49) / 50); }
 };
 
 class LeKiwiMoveController {
@@ -109,6 +119,7 @@ private:
         HOME,
         MOVE_TO,
         JOINT_DELTA,
+        JOINT_TARGET,
         WRIST_FLEX,
         CARRY,
         GAP,

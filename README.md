@@ -161,39 +161,34 @@ config/lekiwi_pick_config.txt
 
 常用调参规则：
 
-- 夹爪伸过球、靠前闭合：减小 `grab_x`，通常同步减小 `pre_grab_x`。
-- 夹爪够不到球：增大 `grab_x`。
-- 夹爪太高或太低：调整 `grab_y`。
-- 每次建议改 `0.005` 米。
-- 如果已经能明显估计偏差，例如夹爪整体靠前约 5cm，可以直接把 `grab_x` 和 `pre_grab_x` 同步减小 `0.05`。
+- 夹爪伸过球：减小 `grab_forward_offset_cm`。
+- 夹爪够不到球：增大 `grab_forward_offset_cm`。
+- 夹爪偏左/偏右：调整 `grab_lateral_offset_cm`，正数向左、负数向右。
+- 夹爪过低/过高：调整 `grab_height_offset_cm`，正数升高、负数降低。
+- 夹球俯仰角不合适：每次调整 `grab_pitch_offset_deg` 约 `5` 度。
+- 位置偏移单位为厘米，每次建议只改 `0.5`。
 - `PICK_BALL done` 日志会同时打印夹爪反馈和抓取后视觉复核。只有 `gripper_hold=yes` 且 `ball_visible=no` 时，最终 `holding` 才会是 `yes`。
 
 完整闭环中，如果第一次没有夹住，程序不会去找桶。抓取动作结束后会重新取一帧图像：如果球仍在视野内且仍处于 `BALL_READY` 区域，立即使用下一组小偏移再次抓取；如果球还在视野内但不再满足抓取条件，则先回到追球状态重新视觉对准。
 
 ```text
 (0, 0)
-(-0.005, 0)
-(-0.010, 0)
-(-0.015, 0)
-(-0.020, 0)
-(+0.010, 0)
-(0, -0.010)
-(0, +0.010)
-(-0.015, -0.010)
-(-0.015, +0.010)
+(-0.5, 0)
+(-1.0, 0)
+(-1.5, 0)
+(-2.0, 0)
+(+1.0, 0)
+(0, -1.0)
+(0, +1.0)
+(-1.5, -1.0)
+(-1.5, +1.0)
 ```
 
-如果某次偏移夹住了球，程序会把成功参数写回 `config/lekiwi_pick_config.txt`。如果所有偏移都失败，程序会重新从第一组参数开始追球和对准。
+这两个数依次是前后、高度偏移，单位也是厘米。如果某次偏移夹住了球，程序会把
+成功的偏移写回 `config/lekiwi_pick_config.txt`。如果所有偏移都失败，程序会重新
+从第一组参数开始追球和对准。
 
-抓取后如果看到机械臂肩部向右转一下，那是 Desktop-Wanderer 原动作里的肩部回正。当前默认开启，让夹取和回收轨迹更接近 Linux 下的 Python 版本；需要单独观察夹爪时可以临时关闭：
-
-```text
-return_shoulder_pan = 1
-```
-
-临时调抓球时可以改成 `0`，避免肩部回正干扰观察；调完建议恢复为 `1`。
-
-底盘停车距离由 `ball_target_size` 控制：
+底盘停车距离由 `ball_stop_size_px` 控制：
 
 - 值越大，车停得越近。
 - 值越小，车停得越远。
@@ -202,21 +197,22 @@ return_shoulder_pan = 1
 进入抓取前还会检查球中心误差：
 
 ```text
-ball_size_tolerance = 15
-ball_center_tolerance = 30
-stable_frames = 2
+ball_stop_tolerance_px = 15
+ball_center_tolerance_px = 30
+ball_stable_frames = 2
 ```
 
-也就是球需要落在目标尺寸和中心误差窗口内，并连续短时间稳定后才进入夹球。
+当前距离窗口是 `155±15`，即球框尺寸在 `140～170` 像素内；球心左右误差还需
+不超过 `30` 像素，并连续满足 `2` 个检测帧才进入夹球。
 StarryOS 真实 RKNN 闭环当前约 `2.3fps`，检测中心会随架空车轮和画面抖动在
 `+/-30px` 左右变化；如果窗口太窄，会一直输出 `BALL_FINE_LEFT/RIGHT`
 或 `BALL_BACKWARD`，日志里反复出现 `BALL_READY ... ready=0` 但无法进入夹球。
 
-夹爪闭合角度由 `wrist_pick_pitch` 控制。如果夹爪不是尽量垂直向下，而是明显倾斜，可以每次改 `5` 观察效果：
+夹球腕部角度由 `grab_pitch_offset_deg` 控制。如果夹爪明显倾斜，可以每次改 `5` 观察效果：
 
 ```text
-wrist_pick_pitch = 75
-wrist_pick_pitch = 85
+grab_pitch_offset_deg = -5
+grab_pitch_offset_deg = 5
 ```
 
 更详细说明见：

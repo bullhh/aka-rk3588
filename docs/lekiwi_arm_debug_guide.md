@@ -304,10 +304,10 @@ HOME
 | --- | --- |
 | 动作一顿一顿 | `tick()` 是否被视觉帧率限制 |
 | 某阶段停几秒 | `GAP` 是否按视觉帧计数 |
-| 夹爪伸过球 | 减小 `grab_x`，同步减小 `pre_grab_x` |
-| 夹爪够不到球 | 增大 `grab_x` 和 `pre_grab_x` |
-| 夹爪过高或过低 | 每次调整 `grab_y` 约 `0.005` 米 |
-| 夹爪不垂直 | 每次调整 `wrist_pick_pitch` 约 `3-5` |
+| 夹爪伸过球/够不到 | 调整 `grab_forward_offset_cm`，负数收近、正数伸远 |
+| 夹爪偏左/偏右 | 调整 `grab_lateral_offset_cm`，正数向左、负数向右 |
+| 夹爪过低/过高 | 调整 `grab_height_offset_cm`，正数升高、负数降低 |
+| 夹爪俯仰不合适 | 每次调整 `grab_pitch_offset_deg` 约 `5` 度 |
 | 抬升姿态突变 | 检查 `lift_x/lift_y` 和 `wrist_lift_pitch` |
 | USB 超时或校验错误 | 降低更新频率，检查供电、USB和线缆 |
 

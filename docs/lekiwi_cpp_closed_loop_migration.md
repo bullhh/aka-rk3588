@@ -2,6 +2,10 @@
 
 本文记录把 Desktop-Wanderer Python 控制流程迁移到当前 C++ 工程后的设计与测试方法。
 
+> 注：本文后半部分保留了早期 `grab_x/grab_y` 等参数名用于说明迁移历史。当前可调
+> 参数已经改为 `grab_id1_deg`～`grab_id5_deg` 基础姿态和三个厘米偏移；实际调试请以
+> `config/lekiwi_pick_config.txt` 内的逐项注释及 `docs/lekiwi_user_manual.md` 为准。
+
 ## 目标
 
 当前工程需要同时运行在 Linux 和 StarryOS，因此主流程仍保留 C++ 实现。Desktop-Wanderer 只作为控制策略参考，不直接引入 Python 运行时。

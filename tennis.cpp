@@ -499,17 +499,18 @@ int main(int argc, char** argv)
     int lekiwi_arm_log_tick = 0;
     LeKiwiPickConfig lekiwi_pick_base_config;
     lekiwi_pick_base_config.load();
-    std::vector<std::pair<float, float>> lekiwi_pick_retry_offsets = {
+    // Retry offsets are expressed in centimetres to match lekiwi_pick_config.txt.
+    std::vector<std::pair<float, float>> lekiwi_pick_retry_offsets_cm = {
         {0.0f, 0.0f},
-        {-0.005f, 0.0f},
-        {-0.010f, 0.0f},
-        {-0.015f, 0.0f},
-        {-0.020f, 0.0f},
-        {0.010f, 0.0f},
-        {0.0f, -0.010f},
-        {0.0f, 0.010f},
-        {-0.015f, -0.010f},
-        {-0.015f, 0.010f},
+        {-0.5f, 0.0f},
+        {-1.0f, 0.0f},
+        {-1.5f, 0.0f},
+        {-2.0f, 0.0f},
+        {1.0f, 0.0f},
+        {0.0f, -1.0f},
+        {0.0f, 1.0f},
+        {-1.5f, -1.0f},
+        {-1.5f, 1.0f},
     };
     size_t lekiwi_pick_retry_index = 0;
     LeKiwiPickConfig lekiwi_pick_attempt_config = lekiwi_pick_base_config;
@@ -555,38 +556,37 @@ int main(int argc, char** argv)
             if (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->active() &&
                 !lekiwi_arm_ctrl->done() && !lekiwi_arm_ctrl->failed()) {
                 lekiwi_pick_attempt_config = lekiwi_pick_base_config;
-                if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets.size()) {
-                    float dx = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].first;
-                    float dy = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].second;
-                    lekiwi_pick_attempt_config.pre_grab_x += dx;
-                    lekiwi_pick_attempt_config.grab_x += dx;
-                    lekiwi_pick_attempt_config.pre_grab_y += dy;
-                    lekiwi_pick_attempt_config.grab_y += dy;
+                if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets_cm.size()) {
+                    float dforward_cm = lekiwi_pick_retry_offsets_cm[lekiwi_pick_retry_index].first;
+                    float dheight_cm = lekiwi_pick_retry_offsets_cm[lekiwi_pick_retry_index].second;
+                    lekiwi_pick_attempt_config.grab_forward_offset_cm += dforward_cm;
+                    lekiwi_pick_attempt_config.grab_height_offset_cm += dheight_cm;
                 }
-                float log_dx = 0.0f, log_dy = 0.0f;
-                if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets.size()) {
-                    log_dx = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].first;
-                    log_dy = lekiwi_pick_retry_offsets[lekiwi_pick_retry_index].second;
+                float log_forward_cm = 0.0f, log_height_cm = 0.0f;
+                if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets_cm.size()) {
+                    log_forward_cm = lekiwi_pick_retry_offsets_cm[lekiwi_pick_retry_index].first;
+                    log_height_cm = lekiwi_pick_retry_offsets_cm[lekiwi_pick_retry_index].second;
                 }
                 if (!lekiwi_arm_ctrl->begin_pick(lekiwi_pick_attempt_config)) {
                     dup2(g_saved_stderr, STDERR_FILENO);
-                    printf("[GAME] PICK_BALL communication failure attempt=%zu/%zu offset=(%.4f, %.4f): %s\n",
+                    printf("[GAME] PICK_BALL communication failure attempt=%zu/%zu offset_cm=(%.1f, %.1f): %s\n",
                            lekiwi_pick_retry_index + 1,
-                           lekiwi_pick_retry_offsets.size(),
-                           log_dx,
-                           log_dy,
+                           lekiwi_pick_retry_offsets_cm.size(),
+                           log_forward_cm,
+                           log_height_cm,
                            lekiwi_arm_ctrl->last_error().c_str());
                     cleanup_and_exit();
                     return 1;
                 }
                 dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PICK_BALL start IK catch sequence attempt=%zu/%zu offset=(%.4f, %.4f) grab=(%.4f, %.4f)\n",
+                printf("[GAME] PICK_BALL start catch sequence attempt=%zu/%zu retry_offset_cm=(%.1f, %.1f) total_offset_cm=(%.1f, %.1f, %.1f)\n",
                        lekiwi_pick_retry_index + 1,
-                       lekiwi_pick_retry_offsets.size(),
-                       log_dx,
-                       log_dy,
-                       lekiwi_pick_attempt_config.grab_x,
-                       lekiwi_pick_attempt_config.grab_y);
+                       lekiwi_pick_retry_offsets_cm.size(),
+                       log_forward_cm,
+                       log_height_cm,
+                       lekiwi_pick_attempt_config.grab_forward_offset_cm,
+                       lekiwi_pick_attempt_config.grab_lateral_offset_cm,
+                       lekiwi_pick_attempt_config.grab_height_offset_cm);
                 dup2(g_devnull, STDERR_FILENO);
             }
 
@@ -692,9 +692,10 @@ int main(int argc, char** argv)
                         lekiwi_pick_attempt_config.save();
                         lekiwi_pick_base_config = lekiwi_pick_attempt_config;
                         dup2(g_saved_stderr, STDERR_FILENO);
-                        printf("[GAME] saved successful pick config grab=(%.4f, %.4f)\n",
-                               lekiwi_pick_base_config.grab_x,
-                               lekiwi_pick_base_config.grab_y);
+                        printf("[GAME] saved successful pick offsets_cm=(%.1f, %.1f, %.1f)\n",
+                               lekiwi_pick_base_config.grab_forward_offset_cm,
+                               lekiwi_pick_base_config.grab_lateral_offset_cm,
+                               lekiwi_pick_base_config.grab_height_offset_cm);
                         dup2(g_devnull, STDERR_FILENO);
                     }
                     lekiwi_pick_retry_index = 0;
@@ -704,7 +705,7 @@ int main(int argc, char** argv)
                     printf("[GAME] -> FIND_BUCKET\n");
                 } else {
                     lekiwi_pick_retry_index++;
-                    if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets.size()) {
+                    if (lekiwi_pick_retry_index < lekiwi_pick_retry_offsets_cm.size()) {
                         if (ball_ready_for_retry) {
                             game_state = GameState::PICK_BALL;
                         } else {
@@ -720,7 +721,7 @@ int main(int argc, char** argv)
                                ball_ready_for_retry ? "PICK_BALL immediate retry"
                                                     : "CHASE_BALL visual realign",
                                lekiwi_pick_retry_index + 1,
-                               lekiwi_pick_retry_offsets.size(),
+                               lekiwi_pick_retry_offsets_cm.size(),
                                post_ball.visible ? "ball still visible"
                                                  : "ball not confirmed held or visible");
                         dup2(g_devnull, STDERR_FILENO);
@@ -1024,7 +1025,7 @@ int main(int argc, char** argv)
                     dup2(g_saved_stderr, STDERR_FILENO);
                     printf("[GAME] -> PICK_BALL attempt=%zu/%zu\n",
                            lekiwi_pick_retry_index + 1,
-                           lekiwi_pick_retry_offsets.size());
+                           lekiwi_pick_retry_offsets_cm.size());
                     dup2(g_devnull, STDERR_FILENO);
                 }
                 t_ctrl_acc += elapsed_us(t_stage);

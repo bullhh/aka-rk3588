@@ -274,37 +274,19 @@ config/lekiwi_pick_config.txt
 相关参数：
 
 ```text
-ball_target_size = 155
-ball_size_tolerance = 5
-ball_center_tolerance = 12
-stable_frames = 10
+ball_stop_size_px = 155
+ball_stop_tolerance_px = 15
+ball_center_tolerance_px = 30
+ball_stable_frames = 2
 ```
 
-含义：
+`ball_stop_size_px` 是球检测框宽、高中的较大值。增大表示机器人更靠近球才停车，
+减小表示更远停车。`ball_stop_tolerance_px` 是上下容差，所以当前距离合格范围是
+`155±15`，即 `140～170` 像素。容差越大越容易停车，但前后位置差异也越大。
 
-```text
-ball_target_size
-```
-
-球检测框目标尺寸。值越大，车停得越近；值越小，车停得越远。
-
-```text
-ball_size_tolerance
-```
-
-允许的尺寸误差。当前为 5，表示目标尺寸上下约 5 像素内认为距离合适。
-
-```text
-ball_center_tolerance
-```
-
-允许的球中心误差。当前为 12，超过该误差会继续微调方向，不会直接抓取。
-
-```text
-stable_frames
-```
-
-连续稳定帧数。当前为 10。
+`ball_center_tolerance_px` 是球心与画面目标中心允许的左右误差；当前必须在
+`±30` 像素内。`ball_stable_frames` 表示距离和球心条件必须连续满足多少个检测帧；
+Starry约2.3fps时，2帧约需0.9秒。
 
 ## 8. 抓取设计
 
@@ -315,14 +297,13 @@ stable_frames
 
 ```text
 移动到 home
-肩部水平关节偏转 shoulder_pan_delta
+进入记录的ID1～ID5夹球基础姿态方向
 打开夹爪
-调整腕部角度 wrist_pick_pitch
-移动到 pre_grab
-移动到 grab
+自动计算安全接近点
+按前后/左右/上下偏移到达夹球位置
 关闭夹爪
-沿原路径返回 pre_grab 高度（CLEAR）
-使用五次 S 曲线进入 carry
+沿原路径抬离地面（CLEAR）
+使用五次S曲线进入记录的carry姿态
 保持 carry 约0.5秒并确认关节反馈稳定
 允许启动车轮
 ```
@@ -340,19 +321,26 @@ holding      = gripper_hold && !ball_visible
 当前抓取参数：
 
 ```text
-pre_grab_x = 0.1200
-pre_grab_y = 0.1211
-grab_x = 0.1200
-grab_y = -0.0600
-wrist_pick_pitch = 80
-carry_shoulder_pan = -11.3
-carry_shoulder_lift = -18.3
-carry_elbow_flex = -45.0
-carry_wrist_flex = 51.8
-carry_wrist_roll = 0.1
-carry_duration_ticks = 40
-carry_settle_ticks = 10
+grab_id1_deg = -12.0
+grab_id2_deg = 37.7
+grab_id3_deg = 42.1
+grab_id4_deg = 0.2
+grab_id5_deg = 0.0
+grab_forward_offset_cm = 0.0
+grab_lateral_offset_cm = 0.0
+grab_height_offset_cm = 0.0
+grab_pitch_offset_deg = 0.0
+carry_id1_deg = -11.3
+carry_id2_deg = -18.3
+carry_id3_deg = -45.0
+carry_id4_deg = 51.8
+carry_id5_deg = 0.1
+carry_duration_ms = 2000
+carry_settle_ms = 500
 ```
+
+ID1～ID5依次对应肩部水平、肩部抬升、肘部、腕部俯仰和腕部旋转。ID6夹爪不记录
+在两组姿态中，继续使用原有开合量。
 
 ## 9. 抓取调参
 
@@ -373,47 +361,41 @@ config/lekiwi_pick_config.txt
 现场调参规则：
 
 ```text
-夹爪靠前、伸过球：减小 grab_x，并同步减小 pre_grab_x
-夹爪靠后、够不到球：增大 grab_x，并同步增大 pre_grab_x
-夹爪太高：减小 grab_y
-夹爪太低、压地或压球：增大 grab_y
+夹爪伸过球：减小 grab_forward_offset_cm
+夹爪够不到球：增大 grab_forward_offset_cm
+夹爪偏左：减小 grab_lateral_offset_cm
+夹爪偏右：增大 grab_lateral_offset_cm
+夹爪太低：增大 grab_height_offset_cm
+夹爪太高：减小 grab_height_offset_cm
 ```
 
-单位是米：
+三个位置偏移的单位都是厘米，建议每次调整 `0.5`。例如夹爪伸过球约1厘米：
 
 ```text
-0.005 = 0.5cm
-0.010 = 1cm
-0.020 = 2cm
+grab_forward_offset_cm = -1.0
 ```
 
-例如夹球位置向前 2cm：
+例如夹爪比球低约0.5厘米：
 
 ```text
-pre_grab_x += 0.020
-grab_x += 0.020
+grab_height_offset_cm = 0.5
 ```
 
-例如夹球位置向上 1cm：
+夹球腕部角度调节：
 
 ```text
-grab_y += 0.010
-```
-
-通常只改 `grab_y`，不改 `pre_grab_y`，这样机械臂仍然先在安全高度移动，再下探抓球。
-
-夹爪角度调节：
-
-```text
-wrist_pick_pitch = 80
+grab_pitch_offset_deg = 0
 ```
 
 如果夹爪闭合时不是尽量垂直向下，而是明显前倾或后仰，每次改 5 观察：
 
 ```text
-wrist_pick_pitch = 75
-wrist_pick_pitch = 85
+grab_pitch_offset_deg = -5
+grab_pitch_offset_deg = 5
 ```
+
+偏移为0时使用 `grab_id1_deg`～`grab_id5_deg` 记录的基础姿态。程序会自动把前后和
+高度偏移换算为ID2、ID3角度，把左右偏移换算为ID1角度，并补偿ID4以保持原夹爪朝向。
 
 ## 10. 自动重试
 
@@ -421,18 +403,19 @@ wrist_pick_pitch = 85
 
 ```text
 (0, 0)
-(-0.005, 0)
-(-0.010, 0)
-(-0.015, 0)
-(-0.020, 0)
-(+0.010, 0)
-(0, -0.010)
-(0, +0.010)
-(-0.015, -0.010)
-(-0.015, +0.010)
+(-0.5, 0)
+(-1.0, 0)
+(-1.5, 0)
+(-2.0, 0)
+(+1.0, 0)
+(0, -1.0)
+(0, +1.0)
+(-1.5, -1.0)
+(-1.5, +1.0)
 ```
 
-第一个值加到 `pre_grab_x` 和 `grab_x`，第二个值加到 `pre_grab_y` 和 `grab_y`。
+第一个值加到 `grab_forward_offset_cm`，第二个值加到 `grab_height_offset_cm`，单位
+均为厘米。某次成功后只保存偏移，不修改两组基础关节姿态。
 
 如果某次偏移成功，程序会保存成功参数到：
 
@@ -504,12 +487,13 @@ LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH L=12 R=-12
 看日志中的 `size` 和 `off`：
 
 ```text
-size 接近 155
-off 绝对值不超过 12
-ready 连续稳定到 1
+size 在 140～170之间（155±15）
+off 绝对值不超过30
+上述条件连续满足2个检测帧
 ```
 
-如果尺寸在 149 和 162 之间来回跳，可以适当增大 `ball_size_tolerance`，例如从 5 改到 8。
+如果球框尺寸总在当前窗口外来回跳，可以小幅增大 `ball_stop_tolerance_px`；如果停车
+位置前后误差太大，则应减小该值。每次建议只改2～3像素。
 
 ### 13.3 抓住球后不找桶
 
