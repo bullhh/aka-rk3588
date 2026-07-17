@@ -632,7 +632,8 @@ bool FeetechBus::rx_status(uint8_t expected_id, std::vector<uint8_t>& params, ui
 }
 
 bool FeetechBus::tx_rx(uint8_t id, uint8_t instruction, const std::vector<uint8_t>& params,
-                       std::vector<uint8_t>& reply, uint8_t* error_out) {
+                       std::vector<uint8_t>& reply, uint8_t* error_out,
+                       uint8_t allowed_error_mask) {
     flush_input();
     if (!tx_packet(id, instruction, params)) return false;
     if (id == BROADCAST_ID) return true;
@@ -640,7 +641,7 @@ bool FeetechBus::tx_rx(uint8_t id, uint8_t instruction, const std::vector<uint8_
     bool ok = rx_status(id, reply, &err, 120);
     if (error_out) *error_out = err;
     if (!ok) return false;
-    if (err != 0) {
+    if ((err & ~allowed_error_mask) != 0) {
         char msg[128];
         snprintf(msg, sizeof(msg),
                  "motor id=%u returned error status 0x%02x for instruction 0x%02x",
@@ -673,19 +674,25 @@ std::vector<int> FeetechBus::scan(int first_id, int last_id) {
     return found;
 }
 
-bool FeetechBus::write_reg(int id, uint8_t addr, const std::vector<uint8_t>& data) {
+bool FeetechBus::write_reg(int id, uint8_t addr, const std::vector<uint8_t>& data,
+                           uint8_t allowed_error_mask) {
     std::vector<uint8_t> params;
     params.reserve(data.size() + 1);
     params.push_back(addr);
     params.insert(params.end(), data.begin(), data.end());
     std::vector<uint8_t> reply;
-    return tx_rx((uint8_t)id, INST_WRITE, params, reply);
+    return tx_rx((uint8_t)id, INST_WRITE, params, reply, nullptr,
+                 allowed_error_mask);
 }
 
-bool FeetechBus::read_reg(int id, uint8_t addr, uint8_t len, std::vector<uint8_t>& data) {
+bool FeetechBus::read_reg(int id, uint8_t addr, uint8_t len, std::vector<uint8_t>& data,
+                          uint8_t allowed_error_mask, uint8_t* status_error) {
     std::vector<uint8_t> reply;
     std::vector<uint8_t> params = {addr, len};
-    if (!tx_rx((uint8_t)id, INST_READ, params, reply)) return false;
+    uint8_t error = 0;
+    if (!tx_rx((uint8_t)id, INST_READ, params, reply, &error,
+               allowed_error_mask)) return false;
+    if (status_error) *status_error = error;
     if (reply.size() < len) {
         set_error("short read response");
         return false;
@@ -710,6 +717,11 @@ bool FeetechBus::write_u8(int id, uint8_t addr, uint8_t value) {
     return write_reg(id, addr, {value});
 }
 
+bool FeetechBus::write_u8_allow_status(int id, uint8_t addr, uint8_t value,
+                                       uint8_t allowed_error_mask) {
+    return write_reg(id, addr, {value}, allowed_error_mask);
+}
+
 bool FeetechBus::write_u16(int id, uint8_t addr, int value, bool sign_magnitude) {
     uint16_t encoded = sign_magnitude ? encode_sign_magnitude(value) : (uint16_t)value;
     return write_reg(id, addr, {lo(encoded), hi(encoded)});
@@ -725,6 +737,18 @@ bool FeetechBus::read_u8(int id, uint8_t addr, uint8_t& value) {
 bool FeetechBus::read_u16(int id, uint8_t addr, int& value, bool sign_magnitude) {
     std::vector<uint8_t> data;
     if (!read_reg(id, addr, 2, data)) return false;
+    uint16_t raw = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+    value = sign_magnitude ? decode_sign_magnitude(raw) : (int)raw;
+    return true;
+}
+
+bool FeetechBus::read_u16_allow_status(int id, uint8_t addr, int& value,
+                                       bool sign_magnitude,
+                                       uint8_t allowed_error_mask,
+                                       uint8_t& status_error) {
+    std::vector<uint8_t> data;
+    status_error = 0;
+    if (!read_reg(id, addr, 2, data, allowed_error_mask, &status_error)) return false;
     uint16_t raw = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
     value = sign_magnitude ? decode_sign_magnitude(raw) : (int)raw;
     return true;

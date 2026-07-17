@@ -22,7 +22,10 @@ public:
     bool set_joint_deg(const std::string& name, float deg);
     bool set_joint_raw(const std::string& name, int raw);
     bool get_joint_deg(const std::string& name, float& deg);
+    bool get_gripper_deg_allow_overload(float& deg, bool& gripper_overloaded);
     bool get_joint_degs(std::map<std::string, float>& positions);
+    bool get_joint_degs_allow_gripper_overload(
+        std::map<std::string, float>& positions, bool& gripper_overloaded);
     bool write_degrees(const std::map<std::string, float>& pose, int settle_ms = 0);
     bool move_degrees_slow(const std::map<std::string, float>& pose, int settle_ms = 0);
     bool grab_pos();
@@ -48,6 +51,12 @@ private:
     bool write_pose(const std::map<std::string, float>& pose, int settle_ms);
     bool write_raw_pose(const ArmRawPose& pose, int settle_ms);
     bool move_raw_pose_slow(const ArmRawPose& pose, int settle_ms);
+    bool get_joint_degs_impl(std::map<std::string, float>& positions,
+                             bool allow_gripper_overload,
+                             bool* gripper_overloaded);
+    bool get_joint_deg_impl(const std::string& name, float& deg,
+                            uint8_t allowed_error_mask,
+                            uint8_t* status_error);
 
     feetech::FeetechBus& bus_;
     std::map<std::string, Joint> joints_;

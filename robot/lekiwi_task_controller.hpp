@@ -161,6 +161,10 @@ private:
     float pitch_ = 80.0f;
     float move_start_distance_ = 0.0f;
     float move_start_wrist_ = 0.0f;
+    float previous_gripper_position_ = 0.0f;
+    int gripper_stable_ticks_ = 0;
+    bool have_previous_gripper_position_ = false;
+    bool gripper_contact_ = false;
     std::map<std::string, float> carry_start_targets_;
     std::map<std::string, float> targets_;
     std::map<std::string, float> observed_;

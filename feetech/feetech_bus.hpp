@@ -10,6 +10,8 @@
 
 namespace feetech {
 
+static constexpr uint8_t STATUS_ERROR_OVERLOAD = 0x20;
+
 enum class OperatingMode : uint8_t {
     POSITION = 0,
     VELOCITY = 1,
@@ -38,9 +40,14 @@ public:
     std::vector<int> scan(int first_id = 1, int last_id = 9);
 
     bool write_u8(int id, uint8_t addr, uint8_t value);
+    bool write_u8_allow_status(int id, uint8_t addr, uint8_t value,
+                               uint8_t allowed_error_mask);
     bool write_u16(int id, uint8_t addr, int value, bool sign_magnitude = false);
     bool read_u8(int id, uint8_t addr, uint8_t& value);
     bool read_u16(int id, uint8_t addr, int& value, bool sign_magnitude = false);
+    bool read_u16_allow_status(int id, uint8_t addr, int& value,
+                               bool sign_magnitude, uint8_t allowed_error_mask,
+                               uint8_t& status_error);
 
     bool sync_write_u16(uint8_t addr, const std::vector<std::pair<int, int>>& id_values,
                         bool sign_magnitude = false);
@@ -78,9 +85,12 @@ private:
     bool rx_status(uint8_t expected_id, std::vector<uint8_t>& params, uint8_t* error_out,
                    int timeout_ms = 100);
     bool tx_rx(uint8_t id, uint8_t instruction, const std::vector<uint8_t>& params,
-               std::vector<uint8_t>& reply, uint8_t* error_out = nullptr);
-    bool write_reg(int id, uint8_t addr, const std::vector<uint8_t>& data);
-    bool read_reg(int id, uint8_t addr, uint8_t len, std::vector<uint8_t>& data);
+               std::vector<uint8_t>& reply, uint8_t* error_out = nullptr,
+               uint8_t allowed_error_mask = 0);
+    bool write_reg(int id, uint8_t addr, const std::vector<uint8_t>& data,
+                   uint8_t allowed_error_mask = 0);
+    bool read_reg(int id, uint8_t addr, uint8_t len, std::vector<uint8_t>& data,
+                  uint8_t allowed_error_mask = 0, uint8_t* status_error = nullptr);
 
     static uint8_t checksum(uint8_t id, uint8_t length, uint8_t instruction,
                             const std::vector<uint8_t>& params);

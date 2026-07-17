@@ -42,12 +42,23 @@ bool FeetechArm::configure() {
         last_error_ = "not calibrated: " + calibration_error_;
         return false;
     }
+    auto write_config_u8 = [&](const Joint& joint, uint8_t addr, uint8_t value) {
+        if (joint.gripper) {
+            return bus_.write_u8_allow_status(
+                joint.id, addr, value, feetech::STATUS_ERROR_OVERLOAD);
+        }
+        return bus_.write_u8(joint.id, addr, value);
+    };
+
     // Disable every arm joint first. Configuring and re-enabling one joint at
     // a time can let an early joint chase a stale power-on goal while the
     // remaining joints are still being prepared.
     for (const auto& kv : joints_) {
         int id = kv.second.id;
-        if (!bus_.enable_torque(id, false)) {
+        const bool torque_off_ok = kv.second.gripper
+            ? write_config_u8(kv.second, feetech::reg::TORQUE_ENABLE, 0)
+            : bus_.enable_torque(id, false);
+        if (!torque_off_ok) {
             last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
                           " torque-off failed: " + bus_.last_error();
             fprintf(stderr, "[FeetechArm] configure %s id=%d torque-off failed: %s\n",
@@ -59,26 +70,27 @@ bool FeetechArm::configure() {
     std::vector<std::pair<int, int>> hold_goals;
     for (const auto& kv : joints_) {
         int id = kv.second.id;
-        if (!bus_.set_operating_mode(id, feetech::OperatingMode::POSITION)) {
+        if (!write_config_u8(kv.second, feetech::reg::OPERATING_MODE,
+                             static_cast<uint8_t>(feetech::OperatingMode::POSITION))) {
             last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
                           " position-mode failed: " + bus_.last_error();
             fprintf(stderr, "[FeetechArm] configure %s id=%d position-mode failed: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
             return false;
         }
-        if (!bus_.write_u8(id, feetech::reg::P_COEFFICIENT, 16)) {
+        if (!write_config_u8(kv.second, feetech::reg::P_COEFFICIENT, 16)) {
             fprintf(stderr, "[FeetechArm] configure %s id=%d P coefficient skipped: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
         }
-        if (!bus_.write_u8(id, feetech::reg::I_COEFFICIENT, 0)) {
+        if (!write_config_u8(kv.second, feetech::reg::I_COEFFICIENT, 0)) {
             fprintf(stderr, "[FeetechArm] configure %s id=%d I coefficient skipped: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
         }
-        if (!bus_.write_u8(id, feetech::reg::D_COEFFICIENT, 32)) {
+        if (!write_config_u8(kv.second, feetech::reg::D_COEFFICIENT, 32)) {
             fprintf(stderr, "[FeetechArm] configure %s id=%d D coefficient skipped: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
         }
-        if (!bus_.set_acceleration(id, 80)) {
+        if (!write_config_u8(kv.second, feetech::reg::ACCELERATION, 80)) {
             fprintf(stderr, "[FeetechArm] configure %s id=%d acceleration skipped: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
         }
@@ -86,8 +98,15 @@ bool FeetechArm::configure() {
         int current_raw = 0;
         bool read_ok = false;
         for (int attempt = 0; attempt < 4 && !read_ok; attempt++) {
-            read_ok = bus_.read_u16(id, feetech::reg::PRESENT_POSITION,
-                                    current_raw, true);
+            if (kv.second.gripper) {
+                uint8_t status_error = 0;
+                read_ok = bus_.read_u16_allow_status(
+                    id, feetech::reg::PRESENT_POSITION, current_raw, true,
+                    feetech::STATUS_ERROR_OVERLOAD, status_error);
+            } else {
+                read_ok = bus_.read_u16(id, feetech::reg::PRESENT_POSITION,
+                                        current_raw, true);
+            }
             if (!read_ok && attempt < 3) usleep(20000);
         }
         if (!read_ok) {
@@ -110,7 +129,10 @@ bool FeetechArm::configure() {
 
     for (const auto& kv : joints_) {
         int id = kv.second.id;
-        if (!bus_.enable_torque(id, true)) {
+        const bool torque_on_ok = kv.second.gripper
+            ? write_config_u8(kv.second, feetech::reg::TORQUE_ENABLE, 1)
+            : bus_.enable_torque(id, true);
+        if (!torque_on_ok) {
             last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
                           " torque-on failed: " + bus_.last_error();
             fprintf(stderr, "[FeetechArm] configure %s id=%d torque-on failed: %s\n",
@@ -186,6 +208,23 @@ bool FeetechArm::set_joint_raw(const std::string& name, int raw) {
 }
 
 bool FeetechArm::get_joint_deg(const std::string& name, float& deg) {
+    return get_joint_deg_impl(name, deg, 0, nullptr);
+}
+
+bool FeetechArm::get_gripper_deg_allow_overload(float& deg,
+                                                 bool& gripper_overloaded) {
+    uint8_t status_error = 0;
+    const bool ok = get_joint_deg_impl("arm_gripper", deg,
+                                       feetech::STATUS_ERROR_OVERLOAD,
+                                       &status_error);
+    gripper_overloaded = ok &&
+        (status_error & feetech::STATUS_ERROR_OVERLOAD) != 0;
+    return ok;
+}
+
+bool FeetechArm::get_joint_deg_impl(const std::string& name, float& deg,
+                                    uint8_t allowed_error_mask,
+                                    uint8_t* status_error) {
     auto it = joints_.find(name);
     if (it == joints_.end()) {
         last_error_ = "unknown joint: " + name;
@@ -194,11 +233,15 @@ bool FeetechArm::get_joint_deg(const std::string& name, float& deg) {
     int raw = 0;
     static const int kReadAttempts = 4;
     for (int attempt = 1; attempt <= kReadAttempts; attempt++) {
-        if (bus_.read_u16(it->second.id, feetech::reg::PRESENT_POSITION, raw, true)) {
+        uint8_t error = 0;
+        if (bus_.read_u16_allow_status(
+                it->second.id, feetech::reg::PRESENT_POSITION, raw, true,
+                allowed_error_mask, error)) {
             if (attempt > 1) {
                 fprintf(stderr, "[FeetechArm] read joint %s id=%d recovered on attempt %d\n",
                         name.c_str(), it->second.id, attempt);
             }
+            if (status_error) *status_error = error;
             deg = raw_to_deg(it->second, raw);
             return true;
         }
@@ -211,12 +254,40 @@ bool FeetechArm::get_joint_deg(const std::string& name, float& deg) {
 }
 
 bool FeetechArm::get_joint_degs(std::map<std::string, float>& positions) {
+    return get_joint_degs_impl(positions, false, nullptr);
+}
+
+bool FeetechArm::get_joint_degs_allow_gripper_overload(
+    std::map<std::string, float>& positions, bool& gripper_overloaded) {
+    gripper_overloaded = false;
+    return get_joint_degs_impl(positions, true, &gripper_overloaded);
+}
+
+bool FeetechArm::get_joint_degs_impl(std::map<std::string, float>& positions,
+                                     bool allow_gripper_overload,
+                                     bool* gripper_overloaded) {
     positions.clear();
     bool ok = true;
     for (const auto& kv : joints_) {
         float deg = 0.0f;
-        if (get_joint_deg(kv.first, deg)) positions[kv.first] = deg;
-        else ok = false;
+        if (allow_gripper_overload && kv.second.gripper) {
+            uint8_t status_error = 0;
+            if (get_joint_deg_impl(kv.first, deg,
+                                   feetech::STATUS_ERROR_OVERLOAD,
+                                   &status_error)) {
+                positions[kv.first] = deg;
+                if (gripper_overloaded &&
+                    (status_error & feetech::STATUS_ERROR_OVERLOAD)) {
+                    *gripper_overloaded = true;
+                }
+            } else {
+                ok = false;
+            }
+        } else if (get_joint_deg(kv.first, deg)) {
+            positions[kv.first] = deg;
+        } else {
+            ok = false;
+        }
     }
     return ok;
 }

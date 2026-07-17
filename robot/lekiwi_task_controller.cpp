@@ -542,6 +542,10 @@ void LeKiwiArmController::reset() {
              config_.grab_id4_deg + config_.grab_pitch_offset_deg;
     move_start_distance_ = 0.0f;
     move_start_wrist_ = 0.0f;
+    previous_gripper_position_ = 0.0f;
+    gripper_stable_ticks_ = 0;
+    have_previous_gripper_position_ = false;
+    gripper_contact_ = false;
     carry_start_targets_.clear();
     targets_ = {
         {"arm_shoulder_pan", 0.0f},
@@ -585,13 +589,23 @@ bool LeKiwiArmController::begin_put() {
 bool LeKiwiArmController::load_current_positions() {
     observed_.clear();
     commanded_.clear();
-    for (const auto& name : arm_.joint_names()) {
-        float deg = 0.0f;
-        if (arm_.get_joint_deg(name, deg)) {
-            observed_[name] = apply_joint_calibration(name, deg);
-            continue;
-        }
-        return fail("load current position for " + name + " failed: " + arm_.last_error());
+    std::map<std::string, float> positions;
+    bool gripper_overloaded = false;
+    if (!arm_.get_joint_degs_allow_gripper_overload(positions,
+                                                     gripper_overloaded)) {
+        return fail("load current positions failed: " + arm_.last_error());
+    }
+    for (const auto& position : positions) {
+        observed_[position.first] = apply_joint_calibration(position.first,
+                                                             position.second);
+    }
+    if (gripper_overloaded) {
+        gripper_contact_ = true;
+        targets_["arm_gripper"] = observed_["arm_gripper"];
+        fprintf(stderr,
+                "[LeKiwiArmController] pre-existing gripper overload: "
+                "holding position %.1f until the opening step\n",
+                observed_["arm_gripper"]);
     }
     if (targets_.empty()) targets_ = observed_;
     commanded_ = observed_;
@@ -658,17 +672,66 @@ void LeKiwiArmController::forward_kinematics(float shoulder_lift,
 
 bool LeKiwiArmController::send_current_targets() {
     std::map<std::string, float> positions;
-    if (!arm_.get_joint_degs(positions)) {
+    const bool homing = step_index_ < sequence_.size() &&
+                        sequence_[step_index_].kind == Kind::HOME;
+    const bool gripper_opening = step_index_ < sequence_.size() &&
+        sequence_[step_index_].kind == Kind::JOINT_DELTA &&
+        sequence_[step_index_].joint == "arm_gripper" &&
+        sequence_[step_index_].a > 0.0f;
+    const bool gripper_closing = step_index_ < sequence_.size() &&
+        sequence_[step_index_].kind == Kind::JOINT_DELTA &&
+        sequence_[step_index_].joint == "arm_gripper" &&
+        sequence_[step_index_].a < 0.0f;
+    bool gripper_overloaded = false;
+    const bool allow_gripper_overload = homing || gripper_opening ||
+                                        gripper_closing || gripper_contact_;
+    const bool read_ok = allow_gripper_overload
+        ? arm_.get_joint_degs_allow_gripper_overload(positions, gripper_overloaded)
+        : arm_.get_joint_degs(positions);
+    if (!read_ok) {
         return fail("read current positions failed: " + arm_.last_error());
+    }
+
+    if (homing && gripper_overloaded) {
+        const float current = apply_joint_calibration(
+            "arm_gripper", positions["arm_gripper"]);
+        gripper_contact_ = true;
+        targets_["arm_gripper"] = current;
+        commanded_["arm_gripper"] = current;
+    } else if (gripper_overloaded && !gripper_opening &&
+               !gripper_closing && !gripper_contact_) {
+        return fail("unexpected gripper overload outside a contact/release step");
+    }
+
+    if (gripper_closing && !gripper_contact_) {
+        const float current = apply_joint_calibration(
+            "arm_gripper", positions["arm_gripper"]);
+        const float residual = std::abs(targets_["arm_gripper"] - current);
+        const bool stable = have_previous_gripper_position_ &&
+            std::abs(current - previous_gripper_position_) < 0.5f;
+        if (stable && residual > 12.0f) gripper_stable_ticks_++;
+        else gripper_stable_ticks_ = 0;
+        previous_gripper_position_ = current;
+        have_previous_gripper_position_ = true;
+
+        if (gripper_overloaded || gripper_stable_ticks_ >= 6) {
+            gripper_contact_ = true;
+            targets_["arm_gripper"] = current;
+            commanded_["arm_gripper"] = current;
+            fprintf(stderr,
+                    "[LeKiwiArmController] gripper contact: position=%.1f "
+                    "residual=%.1f source=%s; holding current position\n",
+                    current, residual,
+                    gripper_overloaded ? "overload-0x20" : "settled-residual");
+        }
     }
 
     std::map<std::string, float> action;
     constexpr float kArmKp = 0.55f;
     constexpr float kGripperKp = 0.8f;
+    constexpr float kFinalArmTargetThresholdDeg = 8.0f;
     constexpr float kHomeArmStepDeg = 0.75f;      // 15 deg/s at 20 Hz
     constexpr float kHomeGripperStepDeg = 2.0f;  // 40 deg/s at 20 Hz
-    const bool homing = step_index_ < sequence_.size() &&
-                        sequence_[step_index_].kind == Kind::HOME;
     for (const auto& kv : targets_) {
         auto it = positions.find(kv.first);
         if (it == positions.end()) continue;
@@ -691,7 +754,7 @@ bool LeKiwiArmController::send_current_targets() {
             next += kp * error;
         }
         if (!homing && kv.first != "arm_gripper" &&
-                   std::abs(error) < 6.0f) {
+            std::abs(error) < kFinalArmTargetThresholdDeg) {
             next = kv.second;
         }
         action[kv.first] = next;
@@ -796,6 +859,13 @@ bool LeKiwiArmController::advance_step(const Step& step) {
         }
     } else if (!step_initialized_) {
         if (step.kind == Kind::JOINT_DELTA) {
+            if (step.joint == "arm_gripper" && step.a > 0.0f) {
+                // An opening command releases any object left from a previous
+                // interrupted run and starts a fresh contact-detection cycle.
+                gripper_contact_ = false;
+                gripper_stable_ticks_ = 0;
+                have_previous_gripper_position_ = false;
+            }
             targets_[step.joint] += step.a;
         } else if (step.kind == Kind::JOINT_TARGET) {
             targets_[step.joint] = step.a;
@@ -946,7 +1016,11 @@ bool LeKiwiArmController::tick() {
 
 bool LeKiwiArmController::verify_grab(float* gripper_pos) {
     float pos = 0.0f;
-    if (!arm_.get_joint_deg("arm_gripper", pos)) {
+    bool gripper_overloaded = false;
+    const bool ok = gripper_contact_
+        ? arm_.get_gripper_deg_allow_overload(pos, gripper_overloaded)
+        : arm_.get_joint_deg("arm_gripper", pos);
+    if (!ok) {
         if (gripper_pos) *gripper_pos = 0.0f;
         return fail("verify gripper position failed: " + arm_.last_error());
     }
