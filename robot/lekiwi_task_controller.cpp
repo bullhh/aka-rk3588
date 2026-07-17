@@ -60,6 +60,13 @@ bool LeKiwiPickConfig::load(const std::string& path) {
         else if (key == "gripper_close_delta") gripper_close_delta = v;
         else if (key == "wrist_pick_pitch") wrist_pick_pitch = v;
         else if (key == "wrist_lift_pitch") wrist_lift_pitch = v;
+        else if (key == "carry_shoulder_pan") carry_shoulder_pan = v;
+        else if (key == "carry_shoulder_lift") carry_shoulder_lift = v;
+        else if (key == "carry_elbow_flex") carry_elbow_flex = v;
+        else if (key == "carry_wrist_flex") carry_wrist_flex = v;
+        else if (key == "carry_wrist_roll") carry_wrist_roll = v;
+        else if (key == "carry_duration_ticks") carry_duration_ticks = std::max(1, (int)v);
+        else if (key == "carry_settle_ticks") carry_settle_ticks = std::max(0, (int)v);
         else if (key == "return_shoulder_pan") return_shoulder_pan = (int)v;
         else if (key == "ball_target_size") ball_target_size = (int)v;
         else if (key == "ball_size_tolerance") ball_size_tolerance = (int)v;
@@ -91,6 +98,14 @@ bool LeKiwiPickConfig::save(const std::string& path) const {
     ofs << "gripper_close_delta = " << gripper_close_delta << "\n";
     ofs << "wrist_pick_pitch = " << wrist_pick_pitch << "\n";
     ofs << "wrist_lift_pitch = " << wrist_lift_pitch << "\n\n";
+    ofs << "# 夹球并离开地面后，使用关节空间 S 曲线进入车轮启动前的收臂姿态。\n";
+    ofs << "carry_shoulder_pan = " << carry_shoulder_pan << "\n";
+    ofs << "carry_shoulder_lift = " << carry_shoulder_lift << "\n";
+    ofs << "carry_elbow_flex = " << carry_elbow_flex << "\n";
+    ofs << "carry_wrist_flex = " << carry_wrist_flex << "\n";
+    ofs << "carry_wrist_roll = " << carry_wrist_roll << "\n";
+    ofs << "carry_duration_ticks = " << carry_duration_ticks << "\n";
+    ofs << "carry_settle_ticks = " << carry_settle_ticks << "\n\n";
     ofs << "# 抓取时夹爪的腕部角度由 wrist_pick_pitch 控制。\n";
     ofs << "# 如果夹爪不是尽量垂直向下，而是明显前倾或后仰，可以优先调整该值。\n";
     ofs << "# 建议每次改 5，例如 80 -> 75 或 85，观察夹爪闭合时是否更贴合球。\n\n";
@@ -269,12 +284,8 @@ std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
         {Kind::JOINT_DELTA, "arm_gripper", config.gripper_close_delta, 0.0f},
         {Kind::GAP, "", 0.0f, 0.0f},
         {Kind::MOVE_TO, "clear", config.pre_grab_x, config.pre_grab_y},
-        {Kind::MOVE_TO, "lift", config.lift_x, config.lift_y},
-        {Kind::WRIST_FLEX, "arm_wrist_flex", config.wrist_lift_pitch, 0.0f},
+        {Kind::CARRY, "carry", 0.0f, 0.0f},
     };
-    if (config.return_shoulder_pan) {
-        seq.insert(seq.end() - 2, {Kind::JOINT_DELTA, "arm_shoulder_pan", -config.shoulder_pan_delta, 0.0f});
-    }
     return seq;
 }
 
@@ -305,6 +316,7 @@ void LeKiwiArmController::reset() {
     pitch_ = config_.wrist_pick_pitch;
     move_start_distance_ = 0.0f;
     move_start_wrist_ = 0.0f;
+    carry_start_targets_.clear();
     targets_ = {
         {"arm_shoulder_pan", 0.0f},
         {"arm_shoulder_lift", -31.70f},
@@ -567,6 +579,28 @@ bool LeKiwiArmController::advance_step(const Step& step) {
         inverse_kinematics(current_x_, current_y_, shoulder, elbow);
         targets_["arm_shoulder_lift"] = shoulder;
         targets_["arm_elbow_flex"] = elbow;
+    } else if (step.kind == Kind::CARRY) {
+        if (!step_initialized_) {
+            carry_start_targets_ = targets_;
+            step_initialized_ = true;
+        }
+        int duration = std::max(1, config_.carry_duration_ticks);
+        float t = std::min(1.0f, step_hold_ticks_ / (float)duration);
+        float smooth = t * t * t * (10.0f + t * (-15.0f + 6.0f * t));
+        const std::map<std::string, float> carry_targets = {
+            {"arm_shoulder_pan", config_.carry_shoulder_pan},
+            {"arm_shoulder_lift", config_.carry_shoulder_lift},
+            {"arm_elbow_flex", config_.carry_elbow_flex},
+            {"arm_wrist_flex", config_.carry_wrist_flex},
+            {"arm_wrist_roll", config_.carry_wrist_roll},
+        };
+        for (const auto& target : carry_targets) {
+            auto start = carry_start_targets_.find(target.first);
+            float start_value = start == carry_start_targets_.end()
+                ? target.second : start->second;
+            targets_[target.first] =
+                start_value + smooth * (target.second - start_value);
+        }
     } else if (!step_initialized_) {
         if (step.kind == Kind::JOINT_DELTA) {
             targets_[step.joint] += step.a;
@@ -576,7 +610,9 @@ bool LeKiwiArmController::advance_step(const Step& step) {
         step_initialized_ = true;
     }
 
-    if (step.kind == Kind::MOVE_TO && step.joint == "lift") {
+    if (step.kind == Kind::CARRY) {
+        // CARRY directly controls all arm joints, including the wrist.
+    } else if (step.kind == Kind::MOVE_TO && step.joint == "lift") {
         float final_shoulder = 0.0f, final_elbow = 0.0f;
         inverse_kinematics(step.a, step.b, final_shoulder, final_elbow);
         float final_wrist = -final_shoulder - final_elbow + config_.wrist_lift_pitch;
@@ -620,6 +656,21 @@ bool LeKiwiArmController::advance_step(const Step& step) {
 }
 
 bool LeKiwiArmController::step_reached(const Step& step) const {
+    if (step.kind == Kind::CARRY) {
+        int minimum_ticks = std::max(1, config_.carry_duration_ticks) +
+                            std::max(0, config_.carry_settle_ticks);
+        if (step_hold_ticks_ < minimum_ticks) return false;
+        float arm_error = 0.0f;
+        for (const char* joint : {"arm_shoulder_pan", "arm_shoulder_lift",
+                                  "arm_elbow_flex", "arm_wrist_flex",
+                                  "arm_wrist_roll"}) {
+            auto target = targets_.find(joint);
+            auto current = observed_.find(joint);
+            if (target == targets_.end() || current == observed_.end()) return false;
+            arm_error += std::abs(target->second - current->second);
+        }
+        return arm_error < 8.0f;
+    }
     if (step.kind == Kind::MOVE_TO) {
         if (std::abs(current_x_ - step.a) >= 0.002f ||
             std::abs(current_y_ - step.b) >= 0.002f) {
@@ -694,6 +745,7 @@ const char* LeKiwiArmController::step_kind_label(Kind kind) {
         case Kind::MOVE_TO:     return "move_to";
         case Kind::JOINT_DELTA: return "joint_delta";
         case Kind::WRIST_FLEX:  return "wrist_flex";
+        case Kind::CARRY:       return "carry";
         case Kind::GAP:         return "gap";
     }
     return "unknown";

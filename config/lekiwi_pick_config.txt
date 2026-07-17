@@ -21,12 +21,21 @@ gripper_close_delta = -60
 wrist_pick_pitch = 80
 wrist_lift_pitch = -20
 
+# 实机手动记录的车轮启动前姿态。夹爪仍使用原有开合增量，不使用手动记录值。
+# CLEAR 完成后，程序用 carry_duration_ticks 个20Hz周期执行五次 S 曲线收臂。
+carry_shoulder_pan = -11.3
+carry_shoulder_lift = -18.3
+carry_elbow_flex = -45.0
+carry_wrist_flex = 51.8
+carry_wrist_roll = 0.1
+carry_duration_ticks = 40
+carry_settle_ticks = 10
+
 # 抓取时夹爪的腕部角度由 wrist_pick_pitch 控制。
 # 如果夹爪不是尽量垂直向下，而是明显前倾或后仰，可以优先调整该值。
 # 建议每次改 5，例如 80 -> 75 或 85，观察夹爪闭合时是否更贴合球。
 
-# 是否在夹爪闭合后把肩部水平转动关节转回原位。
-# 0 表示不转回，便于观察是否夹住；1 表示按 Desktop-Wanderer 原动作转回。
+# 兼容旧版本的配置项；当前 CARRY 轨迹直接控制肩部水平关节。
 return_shoulder_pan = 1
 
 # 视觉伺服停车尺寸。当前默认 155 像素，让车比 168~170 像素时稍远一点停车。

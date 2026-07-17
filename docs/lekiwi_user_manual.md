@@ -305,7 +305,8 @@ stable_frames
 
 ## 8. 抓取设计
 
-当前抓取是 C++ 逆运动学加 P 控制，不再直接录制一串原始舵机位置作为主流程。
+当前抓取是逆运动学与关键姿态的混合控制：接近和夹球使用已经验证的二维 IK，收臂
+使用实机记录的 CARRY 关节姿态。
 
 抓取动作大致为：
 
@@ -317,9 +318,10 @@ stable_frames
 移动到 pre_grab
 移动到 grab
 关闭夹爪
-肩部水平关节回正
-抬起到 lift
-调整抬起后的腕部角度 wrist_lift_pitch
+沿原路径返回 pre_grab 高度（CLEAR）
+使用五次 S 曲线进入 carry
+保持 carry 约0.5秒并确认关节反馈稳定
+允许启动车轮
 ```
 
 抓取完成后同时使用夹爪反馈和抓取后视觉复核：
@@ -340,6 +342,13 @@ pre_grab_y = 0.1211
 grab_x = 0.1200
 grab_y = -0.0600
 wrist_pick_pitch = 80
+carry_shoulder_pan = -11.3
+carry_shoulder_lift = -18.3
+carry_elbow_flex = -45.0
+carry_wrist_flex = 51.8
+carry_wrist_roll = 0.1
+carry_duration_ticks = 40
+carry_settle_ticks = 10
 ```
 
 ## 9. 抓取调参

@@ -22,6 +22,13 @@ struct LeKiwiPickConfig {
     float gripper_close_delta = -60.0f;
     float wrist_pick_pitch = 80.0f;
     float wrist_lift_pitch = -20.0f;
+    float carry_shoulder_pan = -11.3f;
+    float carry_shoulder_lift = -18.3f;
+    float carry_elbow_flex = -45.0f;
+    float carry_wrist_flex = 51.8f;
+    float carry_wrist_roll = 0.1f;
+    int carry_duration_ticks = 40;
+    int carry_settle_ticks = 10;
     int return_shoulder_pan = 1;
     int ball_target_size = 0;
     int ball_size_tolerance = 10;
@@ -103,6 +110,7 @@ private:
         MOVE_TO,
         JOINT_DELTA,
         WRIST_FLEX,
+        CARRY,
         GAP,
     };
 
@@ -141,6 +149,7 @@ private:
     float pitch_ = 80.0f;
     float move_start_distance_ = 0.0f;
     float move_start_wrist_ = 0.0f;
+    std::map<std::string, float> carry_start_targets_;
     std::map<std::string, float> targets_;
     std::map<std::string, float> observed_;
     std::map<std::string, float> commanded_;

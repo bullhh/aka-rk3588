@@ -287,8 +287,8 @@ HOME
 -> GRAB
 -> 闭合夹爪
 -> CLEAR（沿下降路径回到 PRE_GRAB 高度）
--> LIFT
--> 运输姿态
+-> CARRY（约2秒五次 S 曲线收臂）
+-> 保持约0.5秒，确认静止后允许车轮启动
 ```
 
 正常现象：
@@ -381,7 +381,7 @@ PUT_BALL done
 ## 7. 第一阶段流畅度调试方法
 
 当前动作算法参考 Desktop-Wanderer。机械臂动作已固定为约20 Hz，GAP约300 ms，
-HOME使用关节空间缓启动，GRAB到LIFT之间增加CLEAR阶段避开奇异区。
+HOME使用关节空间缓启动，夹球后先CLEAR，再以关节空间五次 S 曲线进入CARRY。
 
 1. 运行 `test-new-arm auto ik-pick`，录像并记录总时长。
 2. 在完整流程中录像同一机械臂阶段。
