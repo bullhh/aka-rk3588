@@ -318,8 +318,19 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
             "[FeetechArm] slow move: arm<=%.1f deg/s gripper<=%.1f deg/s\n",
             kArmStepDeg * 20.0f, kGripperStepDeg * 20.0f);
 
+    const bool moves_gripper = pose.find("arm_gripper") != pose.end();
     std::map<std::string, float> positions;
-    if (!get_joint_degs(positions)) return false;
+    bool gripper_overloaded = false;
+    const bool initial_read_ok = moves_gripper
+        ? get_joint_degs_allow_gripper_overload(positions, gripper_overloaded)
+        : get_joint_degs(positions);
+    if (!initial_read_ok) return false;
+    const bool gripper_opening = moves_gripper &&
+        pose.at("arm_gripper") > positions["arm_gripper"];
+    if (gripper_overloaded && !gripper_opening) {
+        last_error_ = "slow move refused: overloaded gripper may only open";
+        return false;
+    }
     std::map<std::string, float> commanded;
     for (const auto& target : pose) {
         auto joint = joints_.find(target.first);
@@ -351,7 +362,15 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
         }
         if (!write_pose(next, 0)) return false;
 
-        if (!get_joint_degs(positions)) return false;
+        gripper_overloaded = false;
+        const bool feedback_ok = moves_gripper
+            ? get_joint_degs_allow_gripper_overload(positions, gripper_overloaded)
+            : get_joint_degs(positions);
+        if (!feedback_ok) return false;
+        if (gripper_overloaded && !gripper_opening) {
+            last_error_ = "slow move stopped: gripper overload while closing";
+            return false;
+        }
         bool feedback_reached = command_reached;
         for (const auto& target : pose) {
             auto joint = joints_.find(target.first);

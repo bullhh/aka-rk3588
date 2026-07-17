@@ -379,6 +379,8 @@ int main(int argc, char** argv)
     FeetechArm* ft_arm_ptr = nullptr;
     DriveAdapter* drive_ptr = nullptr;
     ArmAdapter* arm_ptr = nullptr;
+    bool lekiwi_startup_holding = false;
+    float lekiwi_startup_gripper = 0.0f;
 
     if (use_lekiwi) {
         ft_bus_ptr = new feetech::FeetechBus(uart_dev, 1000000);
@@ -408,6 +410,26 @@ int main(int argc, char** argv)
         drive_ptr = new OmniDriveAdapter(*omni_base_ptr);
         arm_ptr = new FeetechArmAdapter(*ft_arm_ptr);
         g_drive = drive_ptr;
+        bool gripper_overloaded = false;
+        if (!ft_arm_ptr->get_gripper_deg_allow_overload(
+                lekiwi_startup_gripper, gripper_overloaded)) {
+            LOGE("Failed to inspect startup gripper state: %s",
+                 ft_arm_ptr->last_error().c_str());
+            cleanup_and_exit();
+            return 1;
+        }
+        lekiwi_startup_holding = lekiwi_startup_gripper > 25.0f;
+        if (lekiwi_startup_holding) {
+            LOGI("Startup gripper=%.1f%s: releasing held object before HOME",
+                 lekiwi_startup_gripper,
+                 gripper_overloaded ? " overload=0x20" : "");
+            if (!ft_arm_ptr->move_degrees_slow({{"arm_gripper", 100.0f}}, 700)) {
+                LOGE("Failed to release startup gripper: %s",
+                     ft_arm_ptr->last_error().c_str());
+                cleanup_and_exit();
+                return 1;
+            }
+        }
         LOGI("Returning LeKiwi arm to HOME at limited speed");
         if (!ft_arm_ptr->grab_pos()) {
             LOGE("Failed to return Feetech arm to HOME: %s",
