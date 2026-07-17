@@ -19,14 +19,28 @@ void OmniBase::set_limits(float wheel_radius_m, float base_radius_m, int max_raw
 }
 
 bool OmniBase::configure() {
-    bool ok = true;
     for (int id : {left_id_, back_id_, right_id_}) {
-        ok = bus_.enable_torque(id, false) && ok;
-        ok = bus_.set_operating_mode(id, feetech::OperatingMode::VELOCITY) && ok;
-        ok = bus_.set_acceleration(id, 80) && ok;
-        ok = bus_.enable_torque(id, true) && ok;
+        if (!bus_.enable_torque(id, false)) return false;
     }
-    return ok;
+
+    for (int id : {left_id_, back_id_, right_id_}) {
+        if (!bus_.set_operating_mode(id, feetech::OperatingMode::VELOCITY) ||
+            !bus_.set_acceleration(id, 80) ||
+            !bus_.set_goal_velocity(id, 0)) {
+            return false;
+        }
+    }
+
+    for (int id : {left_id_, back_id_, right_id_}) {
+        // Never enable a velocity-mode wheel with a stale non-zero goal.
+        if (!bus_.enable_torque(id, true)) {
+            for (int rollback_id : {left_id_, back_id_, right_id_}) {
+                bus_.enable_torque(rollback_id, false);
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 int OmniBase::degps_to_raw(float degps) {

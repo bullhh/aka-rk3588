@@ -1,6 +1,8 @@
 #include "feetech_arm.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <sstream>
 #include <stdio.h>
 #include <unistd.h>
 #include <vector>
@@ -40,6 +42,9 @@ bool FeetechArm::configure() {
         last_error_ = "not calibrated: " + calibration_error_;
         return false;
     }
+    // Disable every arm joint first. Configuring and re-enabling one joint at
+    // a time can let an early joint chase a stale power-on goal while the
+    // remaining joints are still being prepared.
     for (const auto& kv : joints_) {
         int id = kv.second.id;
         if (!bus_.enable_torque(id, false)) {
@@ -49,6 +54,11 @@ bool FeetechArm::configure() {
                     kv.first.c_str(), id, bus_.last_error().c_str());
             return false;
         }
+    }
+
+    std::vector<std::pair<int, int>> hold_goals;
+    for (const auto& kv : joints_) {
+        int id = kv.second.id;
         if (!bus_.set_operating_mode(id, feetech::OperatingMode::POSITION)) {
             last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
                           " position-mode failed: " + bus_.last_error();
@@ -72,14 +82,47 @@ bool FeetechArm::configure() {
             fprintf(stderr, "[FeetechArm] configure %s id=%d acceleration skipped: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
         }
+
+        int current_raw = 0;
+        bool read_ok = false;
+        for (int attempt = 0; attempt < 4 && !read_ok; attempt++) {
+            read_ok = bus_.read_u16(id, feetech::reg::PRESENT_POSITION,
+                                    current_raw, true);
+            if (!read_ok && attempt < 3) usleep(20000);
+        }
+        if (!read_ok) {
+            last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
+                          " current-position read failed: " + bus_.last_error();
+            fprintf(stderr, "[FeetechArm] %s\n", last_error_.c_str());
+            return false;
+        }
+        hold_goals.push_back({id, current_raw});
+    }
+
+    // Seed every goal with its measured position while torque is still off.
+    // Enabling torque now holds the current pose instead of snapping to an old
+    // goal retained by the servo.
+    if (!bus_.sync_write_u16(feetech::reg::GOAL_POSITION, hold_goals, true)) {
+        last_error_ = "configure current-position hold failed: " + bus_.last_error();
+        fprintf(stderr, "[FeetechArm] %s\n", last_error_.c_str());
+        return false;
+    }
+
+    for (const auto& kv : joints_) {
+        int id = kv.second.id;
         if (!bus_.enable_torque(id, true)) {
             last_error_ = "configure " + kv.first + " id=" + std::to_string(id) +
                           " torque-on failed: " + bus_.last_error();
             fprintf(stderr, "[FeetechArm] configure %s id=%d torque-on failed: %s\n",
                     kv.first.c_str(), id, bus_.last_error().c_str());
+            for (const auto& rollback : joints_) {
+                bus_.enable_torque(rollback.second.id, false);
+            }
             return false;
         }
     }
+    fprintf(stderr, "[FeetechArm] torque enabled at current positions; no startup jump\n");
+    last_error_.clear();
     return true;
 }
 
@@ -124,12 +167,7 @@ bool FeetechArm::set_joint_deg(const std::string& name, float deg) {
         last_error_ = "unknown joint: " + name;
         return false;
     }
-    if (!bus_.set_goal_position(it->second.id, deg_to_raw(it->second, deg))) {
-        last_error_ = "write joint " + name + " id=" + std::to_string(it->second.id) +
-                      " failed: " + bus_.last_error();
-        return false;
-    }
-    return true;
+    return move_degrees_slow({{name, deg}}, 0);
 }
 
 bool FeetechArm::set_joint_raw(const std::string& name, int raw) {
@@ -166,12 +204,10 @@ bool FeetechArm::get_joint_deg(const std::string& name, float& deg) {
         }
         if (attempt < kReadAttempts) usleep(20000);
     }
-    {
-        last_error_ = "read joint " + name + " id=" + std::to_string(it->second.id) +
-                      " position failed: " + bus_.last_error();
-        fprintf(stderr, "[FeetechArm] %s\n", last_error_.c_str());
-        return false;
-    }
+    last_error_ = "read joint " + name + " id=" + std::to_string(it->second.id) +
+                  " position failed: " + bus_.last_error();
+    fprintf(stderr, "[FeetechArm] %s\n", last_error_.c_str());
+    return false;
 }
 
 bool FeetechArm::get_joint_degs(std::map<std::string, float>& positions) {
@@ -194,6 +230,89 @@ std::vector<std::string> FeetechArm::joint_names() const {
 
 bool FeetechArm::write_degrees(const std::map<std::string, float>& pose, int settle_ms) {
     return write_pose(pose, settle_ms);
+}
+
+bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int settle_ms) {
+    if (pose.empty()) {
+        last_error_ = "slow move failed: empty pose";
+        return false;
+    }
+
+    constexpr float kArmStepDeg = 0.75f;       // 15 deg/s at 20 Hz
+    constexpr float kGripperStepDeg = 2.0f;   // gripper may move faster
+    constexpr int kPeriodUs = 50000;
+    constexpr int kMaxTicks = 500;             // 25 seconds maximum
+
+    fprintf(stderr,
+            "[FeetechArm] slow move: arm<=%.1f deg/s gripper<=%.1f deg/s\n",
+            kArmStepDeg * 20.0f, kGripperStepDeg * 20.0f);
+
+    std::map<std::string, float> positions;
+    if (!get_joint_degs(positions)) return false;
+    std::map<std::string, float> commanded;
+    for (const auto& target : pose) {
+        auto joint = joints_.find(target.first);
+        auto actual = positions.find(target.first);
+        if (joint == joints_.end() || actual == positions.end()) {
+            last_error_ = "slow move failed: unknown joint " + target.first;
+            return false;
+        }
+        if (target.second < joint->second.min_deg || target.second > joint->second.max_deg) {
+            last_error_ = "slow move failed: target outside joint range for " + target.first;
+            return false;
+        }
+        commanded[target.first] = actual->second;
+    }
+
+    for (int tick = 0; tick < kMaxTicks; tick++) {
+        std::map<std::string, float> next;
+        bool command_reached = true;
+        for (const auto& target : pose) {
+            auto joint = joints_.find(target.first);
+            float error = target.second - commanded[target.first];
+            float max_step = joint->second.gripper ? kGripperStepDeg : kArmStepDeg;
+            if (std::abs(error) > max_step) {
+                command_reached = false;
+                error = std::max(-max_step, std::min(max_step, error));
+            }
+            commanded[target.first] += error;
+            next[target.first] = commanded[target.first];
+        }
+        if (!write_pose(next, 0)) return false;
+
+        if (!get_joint_degs(positions)) return false;
+        bool feedback_reached = command_reached;
+        for (const auto& target : pose) {
+            auto joint = joints_.find(target.first);
+            // Match the real arm's settled feedback accuracy. Tighter bounds
+            // make the controller push continuously against normal static
+            // load without improving the visible pose.
+            const float tolerance = joint->second.gripper ? 12.0f : 3.0f;
+            if (std::abs(target.second - positions[target.first]) > tolerance) {
+                feedback_reached = false;
+            }
+        }
+        if (feedback_reached) {
+            if (settle_ms > 0) usleep(settle_ms * 1000);
+            fprintf(stderr, "[FeetechArm] slow move complete in %.2f s\n",
+                    (tick + 1) * 0.05f);
+            last_error_.clear();
+            return true;
+        }
+        usleep(kPeriodUs);
+    }
+
+    std::ostringstream error;
+    error << "slow move timed out, residuals=";
+    bool first = true;
+    for (const auto& target : pose) {
+        if (!first) error << ',';
+        error << target.first << ':' << (target.second - positions[target.first]);
+        first = false;
+    }
+    last_error_ = error.str();
+    fprintf(stderr, "[FeetechArm] %s\n", last_error_.c_str());
+    return false;
 }
 
 bool FeetechArm::write_pose(const std::map<std::string, float>& pose, int settle_ms) {
@@ -230,15 +349,28 @@ bool FeetechArm::write_raw_pose(const ArmRawPose& pose, int settle_ms) {
     return ok;
 }
 
+bool FeetechArm::move_raw_pose_slow(const ArmRawPose& pose, int settle_ms) {
+    std::map<std::string, float> degrees;
+    for (const auto& kv : pose.joints) {
+        auto joint = joints_.find(kv.first);
+        if (joint == joints_.end()) continue;
+        degrees[kv.first] = raw_to_deg(joint->second, kv.second);
+    }
+    return move_degrees_slow(degrees, settle_ms);
+}
+
 bool FeetechArm::run_pose(const std::string& name, int settle_ms) {
     const ArmRawPose* pose = poses_.get(name);
-    if (!pose) return false;
-    return write_raw_pose(*pose, settle_ms);
+    if (!pose) {
+        last_error_ = "unknown arm pose: " + name;
+        return false;
+    }
+    return move_raw_pose_slow(*pose, settle_ms);
 }
 
 bool FeetechArm::grab_pos() {
-    if (run_pose("home", 1200)) return true;
-    return write_pose({
+    if (has_pose("home")) return run_pose("home", 1200);
+    return move_degrees_slow({
         {"arm_shoulder_pan", 0.0f},
         {"arm_shoulder_lift", -31.7f},
         {"arm_elbow_flex", 27.7f},
@@ -249,8 +381,8 @@ bool FeetechArm::grab_pos() {
 }
 
 bool FeetechArm::release_pos() {
-    if (run_pose("release_pos", 1200)) return true;
-    return write_pose({
+    if (has_pose("release_pos")) return run_pose("release_pos", 1200);
+    return move_degrees_slow({
         {"arm_shoulder_pan", -12.0f},
         {"arm_shoulder_lift", -55.0f},
         {"arm_elbow_flex", 45.0f},
@@ -261,33 +393,34 @@ bool FeetechArm::release_pos() {
 }
 
 bool FeetechArm::grab() {
-    if (run_pose("grab_down", 1000)) {
+    if (has_pose("grab_down")) {
+        if (!run_pose("grab_down", 1000)) return false;
         bool ok = true;
         if (has_pose("grab_close")) ok = run_pose("grab_close", 700) && ok;
         if (has_pose("lift")) ok = run_pose("lift", 1000) && ok;
         return ok;
     }
     bool ok = true;
-    ok = write_pose({
+    ok = move_degrees_slow({
         {"arm_shoulder_pan", -12.0f},
         {"arm_shoulder_lift", -50.0f},
         {"arm_elbow_flex", 40.0f},
         {"arm_wrist_flex", 80.0f},
         {"arm_gripper", 60.0f},
     }, 1000) && ok;
-    ok = write_pose({{"arm_gripper", 5.0f}}, 700) && ok;
+    ok = move_degrees_slow({{"arm_gripper", 5.0f}}, 700) && ok;
     ok = show() && ok;
     return ok;
 }
 
 bool FeetechArm::release() {
-    if (run_pose("release", 700)) return true;
-    return write_pose({{"arm_gripper", 60.0f}}, 700);
+    if (has_pose("release")) return run_pose("release", 700);
+    return move_degrees_slow({{"arm_gripper", 60.0f}}, 700);
 }
 
 bool FeetechArm::show() {
-    if (run_pose("lift", 1000)) return true;
-    return write_pose({
+    if (has_pose("lift")) return run_pose("lift", 1000);
+    return move_degrees_slow({
         {"arm_shoulder_pan", 0.0f},
         {"arm_shoulder_lift", -31.7f},
         {"arm_elbow_flex", 27.7f},

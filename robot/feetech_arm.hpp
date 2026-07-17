@@ -24,6 +24,7 @@ public:
     bool get_joint_deg(const std::string& name, float& deg);
     bool get_joint_degs(std::map<std::string, float>& positions);
     bool write_degrees(const std::map<std::string, float>& pose, int settle_ms = 0);
+    bool move_degrees_slow(const std::map<std::string, float>& pose, int settle_ms = 0);
     bool grab_pos();
     bool grab();
     bool release();
@@ -46,6 +47,7 @@ private:
     float raw_to_deg(const Joint& joint, int raw) const;
     bool write_pose(const std::map<std::string, float>& pose, int settle_ms);
     bool write_raw_pose(const ArmRawPose& pose, int settle_ms);
+    bool move_raw_pose_slow(const ArmRawPose& pose, int settle_ms);
 
     feetech::FeetechBus& bus_;
     std::map<std::string, Joint> joints_;

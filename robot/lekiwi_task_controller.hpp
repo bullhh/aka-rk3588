@@ -130,6 +130,7 @@ private:
         std::string joint;
         float a = 0.0f;
         float b = 0.0f;
+        float c = 0.0f;
     };
 
     static std::vector<Step> pick_sequence(const LeKiwiPickConfig& config);

@@ -127,6 +127,10 @@ LD_LIBRARY_PATH=/home/orangepi/miniforge3/envs/rknn/lib:$LD_LIBRARY_PATH \
 
 第一次上电、换线、换模型或调机械结构后，按下面顺序测试。
 
+机械臂配置时会先在扭矩关闭状态读取各关节当前位置，把当前位置写成目标后才使能
+扭矩，因此不会追逐舵机中残留的旧目标。随后回待机姿态的速度限制为约15度/秒；
+`pos`、预设姿态和完整捡球程序的首次回位也使用同一慢速路径。
+
 ### 5.1 检查 Feetech 总线
 
 ```bash
@@ -394,8 +398,10 @@ grab_pitch_offset_deg = -5
 grab_pitch_offset_deg = 5
 ```
 
-偏移为0时使用 `grab_id1_deg`～`grab_id5_deg` 记录的基础姿态。程序会自动把前后和
-高度偏移换算为ID2、ID3角度，把左右偏移换算为ID1角度，并补偿ID4以保持原夹爪朝向。
+偏移为0时使用 `grab_id1_deg`～`grab_id5_deg` 记录的最终夹球姿态。程序会自动把前后
+和高度偏移换算为ID2、ID3角度，把左右偏移换算为ID1角度；最终ID4直接使用
+`grab_id4_deg + grab_pitch_offset_deg`。接近点的ID4由程序限制在安全范围内，再用
+五次S曲线平滑过渡到最终ID4，不再强制整段轨迹保持固定总俯仰角。
 
 ## 10. 自动重试
 

@@ -1133,7 +1133,7 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
         return 2;
     }
 
-    const std::string& error = command_error.empty() ? bus.last_error() : command_error;
+    const std::string& error = command_error.empty() ? arm.last_error() : command_error;
     printf("test-new-arm %s\n", ok ? "ok" : error.c_str());
     return ok ? 0 : 1;
 }

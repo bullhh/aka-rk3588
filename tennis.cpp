@@ -408,7 +408,13 @@ int main(int argc, char** argv)
         drive_ptr = new OmniDriveAdapter(*omni_base_ptr);
         arm_ptr = new FeetechArmAdapter(*ft_arm_ptr);
         g_drive = drive_ptr;
-        arm_ptr->grab_pos();
+        LOGI("Returning LeKiwi arm to HOME at limited speed");
+        if (!ft_arm_ptr->grab_pos()) {
+            LOGE("Failed to return Feetech arm to HOME: %s",
+                 ft_arm_ptr->last_error().c_str());
+            cleanup_and_exit();
+            return 1;
+        }
         LOGI("LeKiwi platform initialized (Feetech %s)", uart_dev);
         if (stop_after_chase) {
             LOGI("LeKiwi safe test enabled: stop after confirmed chase/ready state");

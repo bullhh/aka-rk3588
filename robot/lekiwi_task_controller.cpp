@@ -83,7 +83,8 @@ struct ResolvedGrabTarget {
     float y = 0.0f;
     float pre_y = 0.0f;
     float pan = 0.0f;
-    float pitch = 0.0f;
+    float pre_wrist = 0.0f;
+    float grab_wrist = 0.0f;
 };
 
 static ResolvedGrabTarget resolve_grab_target(const LeKiwiPickConfig& config) {
@@ -101,9 +102,82 @@ static ResolvedGrabTarget resolve_grab_target(const LeKiwiPickConfig& config) {
     target.pan = config.grab_id1_deg +
                  std::atan2(lateral, std::max(0.01f, forward)) *
                  180.0f / (float)M_PI;
-    target.pitch = config.grab_id2_deg + config.grab_id3_deg +
-                   config.grab_id4_deg + config.grab_pitch_offset_deg;
+    target.grab_wrist = config.grab_id4_deg + config.grab_pitch_offset_deg;
+
+    // Keep PRE_GRAB comfortable, but do not impose a fixed total pitch on the
+    // whole path. The recorded ID4 value remains the exact final grab angle.
+    float pre_shoulder = 0.0f;
+    float pre_elbow = 0.0f;
+    solve_inverse_kinematics(target.x, target.pre_y, pre_shoulder, pre_elbow);
+    const float final_pitch = config.grab_id2_deg + config.grab_id3_deg +
+                              target.grab_wrist;
+    const float ideal_pre_wrist = final_pitch - pre_shoulder - pre_elbow;
+    target.pre_wrist = std::max(-80.0f, std::min(80.0f, ideal_pre_wrist));
     return target;
+}
+
+static bool validate_pick_target(const LeKiwiPickConfig& config,
+                                 const ResolvedGrabTarget& target,
+                                 std::string& error) {
+    constexpr float kArmLimit = 85.0f;
+    constexpr float kWristLimit = 80.0f;
+    constexpr float kL1 = 0.1159f;
+    constexpr float kL2 = 0.1350f;
+
+    auto check_joint = [&](const char* name, float value, float limit) {
+        if (!std::isfinite(value) || value < -limit || value > limit) {
+            std::ostringstream os;
+            os << name << '=' << std::fixed << std::setprecision(1) << value
+               << " outside safe range [-" << limit << ',' << limit << ']';
+            error = os.str();
+            return false;
+        }
+        return true;
+    };
+    if (!check_joint("grab_id1", target.pan, kArmLimit) ||
+        !check_joint("grab_id2", config.grab_id2_deg, kArmLimit) ||
+        !check_joint("grab_id3", config.grab_id3_deg, kArmLimit) ||
+        !check_joint("grab_id4", target.grab_wrist, kWristLimit) ||
+        !check_joint("grab_id5", config.grab_id5_deg, kArmLimit) ||
+        !check_joint("pre_grab_id4", target.pre_wrist, kWristLimit) ||
+        !check_joint("carry_id1", config.carry_id1_deg, kArmLimit) ||
+        !check_joint("carry_id2", config.carry_id2_deg, kArmLimit) ||
+        !check_joint("carry_id3", config.carry_id3_deg, kArmLimit) ||
+        !check_joint("carry_id4", config.carry_id4_deg, kWristLimit) ||
+        !check_joint("carry_id5", config.carry_id5_deg, kArmLimit)) {
+        return false;
+    }
+
+    auto check_point = [&](const char* segment, float x, float y) {
+        const float radius = std::sqrt(x * x + y * y);
+        if (!std::isfinite(radius) || radius < std::abs(kL1 - kL2) ||
+            radius > kL1 + kL2) {
+            std::ostringstream os;
+            os << segment << " Cartesian radius " << std::fixed
+               << std::setprecision(4) << radius << " m is unreachable";
+            error = os.str();
+            return false;
+        }
+        float shoulder = 0.0f;
+        float elbow = 0.0f;
+        solve_inverse_kinematics(x, y, shoulder, elbow);
+        return check_joint("path shoulder", shoulder, kArmLimit) &&
+               check_joint("path elbow", elbow, kArmLimit);
+    };
+    auto check_segment = [&](const char* name, float x0, float y0,
+                             float x1, float y1) {
+        for (int i = 0; i <= 100; i++) {
+            const float t = i / 100.0f;
+            if (!check_point(name, x0 + t * (x1 - x0), y0 + t * (y1 - y0))) {
+                return false;
+            }
+        }
+        return true;
+    };
+    return check_segment("HOME->PRE_GRAB", config.home_x, config.home_y,
+                         target.x, target.pre_y) &&
+           check_segment("PRE_GRAB->GRAB", target.x, target.pre_y,
+                         target.x, target.y);
 }
 } // namespace
 
@@ -417,23 +491,24 @@ std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
     fprintf(stderr,
             "[LeKiwiArmController] grab ids=(%.1f,%.1f,%.1f,%.1f,%.1f) "
             "offset_cm=(forward=%.1f,lateral=%.1f,height=%.1f) pitch_offset=%.1f "
-            "resolved=(pan=%.1f,x=%.4f,y=%.4f,pre_y=%.4f,pitch=%.1f)\n",
+            "resolved=(pan=%.1f,x=%.4f,y=%.4f,pre_y=%.4f,pre_id4=%.1f,grab_id4=%.1f)\n",
             config.grab_id1_deg, config.grab_id2_deg, config.grab_id3_deg,
             config.grab_id4_deg, config.grab_id5_deg,
             config.grab_forward_offset_cm, config.grab_lateral_offset_cm,
             config.grab_height_offset_cm, config.grab_pitch_offset_deg,
-            target.pan, target.x, target.y, target.pre_y, target.pitch);
+            target.pan, target.x, target.y, target.pre_y,
+            target.pre_wrist, target.grab_wrist);
     std::vector<Step> seq = {
         {Kind::HOME, "", config.home_x, config.home_y},
         {Kind::JOINT_TARGET, "arm_shoulder_pan", target.pan, 0.0f},
         {Kind::JOINT_DELTA, "arm_gripper", config.gripper_open_delta_deg, 0.0f},
         {Kind::JOINT_TARGET, "arm_wrist_roll", config.grab_id5_deg, 0.0f},
-        {Kind::MOVE_TO, "", target.x, target.pre_y},
-        {Kind::MOVE_TO, "", target.x, target.y},
+        {Kind::MOVE_TO, "pre_grab", target.x, target.pre_y, target.pre_wrist},
+        {Kind::MOVE_TO, "grab", target.x, target.y, target.grab_wrist},
         {Kind::GAP, "", 0.0f, 0.0f},
         {Kind::JOINT_DELTA, "arm_gripper", config.gripper_close_delta_deg, 0.0f},
         {Kind::GAP, "", 0.0f, 0.0f},
-        {Kind::MOVE_TO, "clear", target.x, target.pre_y},
+        {Kind::MOVE_TO, "clear", target.x, target.pre_y, target.pre_wrist},
         {Kind::CARRY, "carry", 0.0f, 0.0f},
     };
     return seq;
@@ -490,8 +565,11 @@ bool LeKiwiArmController::begin_pick(const LeKiwiPickConfig& config) {
     config_ = config;
     reset();
     config_ = config;
-    pitch_ = config_.grab_id2_deg + config_.grab_id3_deg +
-             config_.grab_id4_deg + config_.grab_pitch_offset_deg;
+    const ResolvedGrabTarget target = resolve_grab_target(config_);
+    std::string validation_error;
+    if (!validate_pick_target(config_, target, validation_error)) {
+        return fail("unsafe pick trajectory: " + validation_error);
+    }
     sequence_ = pick_sequence(config_);
     active_ = true;
     return load_current_positions();
@@ -585,30 +663,34 @@ bool LeKiwiArmController::send_current_targets() {
     }
 
     std::map<std::string, float> action;
-    float arm_kp = 0.55f;
-    float gripper_kp = 0.8f;
-    if (step_index_ < sequence_.size() && sequence_[step_index_].kind == Kind::HOME) {
-        constexpr float kStartupKp = 0.04f;
-        constexpr float kHomeKp = 0.50f;
-        constexpr int kRampTicks = 20;
-        float ramp = std::min(1.0f, step_hold_ticks_ / (float)kRampTicks);
-        arm_kp = kStartupKp + (kHomeKp - kStartupKp) * ramp;
-        gripper_kp = arm_kp;
-    }
+    constexpr float kArmKp = 0.55f;
+    constexpr float kGripperKp = 0.8f;
+    constexpr float kHomeArmStepDeg = 0.75f;      // 15 deg/s at 20 Hz
+    constexpr float kHomeGripperStepDeg = 2.0f;  // 40 deg/s at 20 Hz
+    const bool homing = step_index_ < sequence_.size() &&
+                        sequence_[step_index_].kind == Kind::HOME;
     for (const auto& kv : targets_) {
         auto it = positions.find(kv.first);
         if (it == positions.end()) continue;
         float current = apply_joint_calibration(kv.first, it->second);
         observed_[kv.first] = current;
         float error = kv.second - current;
-        float kp = (kv.first == "arm_gripper") ? gripper_kp : arm_kp;
-        float next = current + kp * error;
-        bool homing = step_index_ < sequence_.size() &&
-                      sequence_[step_index_].kind == Kind::HOME;
-        if (homing && kv.first != "arm_gripper" && step_hold_ticks_ >= 20 &&
-            std::abs(error) < 10.0f) {
-            next = kv.second;
-        } else if (!homing && kv.first != "arm_gripper" &&
+        float next = current;
+        if (homing) {
+            const float max_step = kv.first == "arm_gripper"
+                ? kHomeGripperStepDeg : kHomeArmStepDeg;
+            auto previous = commanded_.find(kv.first);
+            const float last_command = previous == commanded_.end()
+                ? current : previous->second;
+            const float command_error = kv.second - last_command;
+            const float step = std::max(-max_step,
+                                        std::min(max_step, command_error));
+            next = last_command + step;
+        } else {
+            const float kp = kv.first == "arm_gripper" ? kGripperKp : kArmKp;
+            next += kp * error;
+        }
+        if (!homing && kv.first != "arm_gripper" &&
                    std::abs(error) < 6.0f) {
             next = kv.second;
         }
@@ -653,7 +735,7 @@ bool LeKiwiArmController::advance_step(const Step& step) {
             current_y_ = step.b;
             return true;
         }
-        if (step_hold_ticks_ >= 100) {
+        if (step_hold_ticks_ >= 400) {
             return fail("return to HOME timed out, arm error=" + std::to_string(arm_error) +
                         ", gripper error=" + std::to_string(gripper_error));
         }
@@ -725,6 +807,18 @@ bool LeKiwiArmController::advance_step(const Step& step) {
 
     if (step.kind == Kind::CARRY) {
         // CARRY directly controls all arm joints, including the wrist.
+    } else if (step.kind == Kind::MOVE_TO &&
+               (step.joint == "pre_grab" || step.joint == "grab" ||
+                step.joint == "clear")) {
+        float remaining = std::sqrt((step.a - current_x_) * (step.a - current_x_) +
+                                    (step.b - current_y_) * (step.b - current_y_));
+        float progress = move_start_distance_ > 1.0e-6f
+            ? 1.0f - remaining / move_start_distance_ : 1.0f;
+        progress = std::max(0.0f, std::min(1.0f, progress));
+        const float smooth = progress * progress * progress *
+                             (10.0f + progress * (-15.0f + 6.0f * progress));
+        targets_["arm_wrist_flex"] =
+            move_start_wrist_ + smooth * (step.c - move_start_wrist_);
     } else if (step.kind == Kind::MOVE_TO && step.joint == "lift") {
         float final_shoulder = 0.0f, final_elbow = 0.0f;
         inverse_kinematics(step.a, step.b, final_shoulder, final_elbow);
