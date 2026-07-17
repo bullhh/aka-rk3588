@@ -485,6 +485,9 @@ bool LeKiwiArmController::send_current_targets() {
         if (homing && kv.first != "arm_gripper" && step_hold_ticks_ >= 20 &&
             std::abs(error) < 10.0f) {
             next = kv.second;
+        } else if (!homing && kv.first != "arm_gripper" &&
+                   std::abs(error) < 6.0f) {
+            next = kv.second;
         }
         action[kv.first] = next;
         commanded_[kv.first] = next;
@@ -534,6 +537,8 @@ bool LeKiwiArmController::advance_step(const Step& step) {
         return false;
     }
 
+    step_hold_ticks_++;
+
     if (step.kind == Kind::MOVE_TO) {
         float target_x = step.a;
         float target_y = step.b;
@@ -569,7 +574,6 @@ bool LeKiwiArmController::advance_step(const Step& step) {
             pitch_ = step.a;
         }
         step_initialized_ = true;
-        step_hold_ticks_ = 0;
     }
 
     if (step.kind == Kind::MOVE_TO && step.joint == "lift") {
@@ -591,26 +595,64 @@ bool LeKiwiArmController::advance_step(const Step& step) {
 
     if (!send_current_targets()) return false;
     if (step.kind == Kind::JOINT_DELTA || step.kind == Kind::WRIST_FLEX) {
-        int hold = (step.joint == "arm_gripper") ? 8 : 4;
-        return ++step_hold_ticks_ >= hold;
+        int minimum_ticks = (step.joint == "arm_gripper") ? 8 : 4;
+        if (step_hold_ticks_ < minimum_ticks) return false;
     }
     bool reached = step_reached(step);
     if (reached && step.kind == Kind::MOVE_TO && step.joint == "lift") {
         pitch_ = config_.wrist_lift_pitch;
+    }
+    if (!reached && step_hold_ticks_ >= 100) {
+        std::ostringstream error;
+        error << "step timed out: " << step_kind_label(step.kind) << ", residuals=";
+        bool first = true;
+        for (const auto& target : targets_) {
+            auto current = observed_.find(target.first);
+            if (current == observed_.end()) continue;
+            if (!first) error << ',';
+            error << target.first << ':' << std::fixed << std::setprecision(1)
+                  << (target.second - current->second);
+            first = false;
+        }
+        return fail(error.str());
     }
     return reached;
 }
 
 bool LeKiwiArmController::step_reached(const Step& step) const {
     if (step.kind == Kind::MOVE_TO) {
-        return std::abs(current_x_ - step.a) < 0.002f &&
-               std::abs(current_y_ - step.b) < 0.002f;
+        if (std::abs(current_x_ - step.a) >= 0.002f ||
+            std::abs(current_y_ - step.b) >= 0.002f) {
+            return false;
+        }
+        float arm_error = 0.0f;
+        for (const char* joint : {"arm_shoulder_lift", "arm_elbow_flex", "arm_wrist_flex"}) {
+            auto target = targets_.find(joint);
+            auto current = observed_.find(joint);
+            if (target == targets_.end() || current == observed_.end()) return false;
+            arm_error += std::abs(target->second - current->second);
+        }
+        return arm_error < 5.0f;
     }
     if (step.kind == Kind::JOINT_DELTA || step.kind == Kind::WRIST_FLEX) {
         auto target = targets_.find(step.joint);
-        auto current = commanded_.find(step.joint);
-        if (target == targets_.end() || current == commanded_.end()) return true;
-        return std::abs(target->second - current->second) < 2.0f;
+        auto current = observed_.find(step.joint);
+        if (target == targets_.end() || current == observed_.end()) return false;
+        float tolerance = step.joint == "arm_gripper" ? 12.0f : 2.0f;
+        if (std::abs(target->second - current->second) >= tolerance) return false;
+        if (step.kind == Kind::WRIST_FLEX) {
+            float arm_error = 0.0f;
+            for (const char* joint : {"arm_shoulder_pan", "arm_shoulder_lift",
+                                      "arm_elbow_flex", "arm_wrist_flex",
+                                      "arm_wrist_roll"}) {
+                auto arm_target = targets_.find(joint);
+                auto arm_current = observed_.find(joint);
+                if (arm_target == targets_.end() || arm_current == observed_.end()) return false;
+                arm_error += std::abs(arm_target->second - arm_current->second);
+            }
+            return arm_error < 5.0f;
+        }
+        return true;
     }
     return true;
 }

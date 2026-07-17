@@ -335,10 +335,10 @@ holding      = gripper_hold && !ball_visible
 当前抓取参数：
 
 ```text
-pre_grab_x = 0.0900
+pre_grab_x = 0.1200
 pre_grab_y = 0.1211
-grab_x = 0.0900
-grab_y = -0.0800
+grab_x = 0.1200
+grab_y = -0.0600
 wrist_pick_pitch = 80
 ```
 
