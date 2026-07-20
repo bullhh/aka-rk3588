@@ -1120,7 +1120,6 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
                        ctrl.current_step_label());
                 fflush(stdout);
             }
-            usleep(50000);
             tick++;
         }
         float gripper = 0.0f;
@@ -1148,7 +1147,6 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
                        ctrl.current_step_label());
                 fflush(stdout);
             }
-            usleep(50000);
             tick++;
         }
         if (ctrl.failed()) ok = false;

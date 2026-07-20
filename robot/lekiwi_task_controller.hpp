@@ -163,6 +163,7 @@ private:
     static float apply_joint_calibration(const std::string& joint, float value);
     static float remove_joint_calibration(const std::string& joint, float value);
     bool load_current_positions();
+    void pace_control_tick();
     bool send_current_targets();
     bool fail(const std::string& message);
     bool advance_step(const Step& step);
@@ -197,6 +198,9 @@ private:
     std::map<std::string, float> smooth_goal_targets_;
     int smooth_duration_ticks_ = 0;
     int smooth_settle_ticks_ = 0;
+    double step_start_ms_ = 0.0;
+    double next_tick_deadline_ms_ = 0.0;
+    int overrun_warnings_ = 0;
     std::map<std::string, float> targets_;
     std::map<std::string, float> observed_;
     std::map<std::string, float> commanded_;

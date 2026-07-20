@@ -185,7 +185,8 @@ config/lekiwi_pick_config.txt
 前后距离优先通过 `bucket_stop_size_px` 调整；桶中心精调使用
 `bucket_center_tolerance_px`，距离和中心连续满足 `bucket_stable_frames` 帧后才放球。
 `arm_speed_scale=0.5` 是稳定运行速度；
-程序启动及 HOME 返回使用独立的 25°/s 限速。
+控制器按50ms绝对周期和真实时间S曲线运行，普通动作限制为15°/s；程序启动及 HOME
+返回使用独立的25°/s限速。即使通信延迟，单周期命令仍限幅，不会突然加速追赶。
 
 常用调参规则：
 

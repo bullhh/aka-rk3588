@@ -6,11 +6,18 @@
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <time.h>
 #include <unistd.h>
 
 namespace {
 static int clamp_speed(int v) {
     return std::max(-100, std::min(100, v));
+}
+
+static double monotonic_ms() {
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
 }
 
 static LeKiwiMoveController::Command diff_drive_cmd(const char* label, int left, int right) {
@@ -807,6 +814,9 @@ void LeKiwiArmController::reset() {
     smooth_goal_targets_.clear();
     smooth_duration_ticks_ = 0;
     smooth_settle_ticks_ = 0;
+    step_start_ms_ = 0.0;
+    next_tick_deadline_ms_ = 0.0;
+    overrun_warnings_ = 0;
     targets_ = {
         {"arm_shoulder_pan", 0.0f},
         {"arm_shoulder_lift", -31.70f},
@@ -925,8 +935,32 @@ bool LeKiwiArmController::load_current_positions() {
     commanded_ = observed_;
     forward_kinematics(observed_["arm_shoulder_lift"],
                        observed_["arm_elbow_flex"], current_x_, current_y_);
+    next_tick_deadline_ms_ = monotonic_ms();
     last_error_.clear();
     return true;
+}
+
+void LeKiwiArmController::pace_control_tick() {
+    constexpr double kPeriodMs = 50.0;
+    double now_ms = monotonic_ms();
+    if (next_tick_deadline_ms_ <= 0.0) next_tick_deadline_ms_ = now_ms;
+
+    while (now_ms + 0.05 < next_tick_deadline_ms_) {
+        const double remaining_ms = next_tick_deadline_ms_ - now_ms;
+        usleep((useconds_t)std::max(1.0, std::ceil(remaining_ms * 1000.0)));
+        now_ms = monotonic_ms();
+    }
+
+    const double late_ms = now_ms - next_tick_deadline_ms_;
+    if (late_ms > 100.0 && overrun_warnings_ < 3) {
+        fprintf(stderr,
+                "[LeKiwiArmController] control cycle late by %.1f ms; "
+                "keeping per-command speed limit\n",
+                late_ms);
+        overrun_warnings_++;
+    }
+    next_tick_deadline_ms_ = late_ms > kPeriodMs
+        ? now_ms + kPeriodMs : next_tick_deadline_ms_ + kPeriodMs;
 }
 
 bool LeKiwiArmController::fail(const std::string& message) {
@@ -1045,10 +1079,8 @@ bool LeKiwiArmController::send_current_targets() {
     }
 
     std::map<std::string, float> action;
-    constexpr float kArmKp = 0.55f;
-    constexpr float kGripperKp = 0.8f;
-    constexpr float kFinalArmTargetThresholdDeg = 8.0f;
     constexpr float kHomeArmStepDeg = 1.25f;      // 25 deg/s at 20 Hz
+    constexpr float kMotionArmStepDeg = 0.75f;    // 15 deg/s at 20 Hz
     constexpr float kHomeGripperStepDeg = 2.0f;  // 40 deg/s at 20 Hz
     for (const auto& kv : targets_) {
         auto it = positions.find(kv.first);
@@ -1059,26 +1091,16 @@ bool LeKiwiArmController::send_current_targets() {
             return fail("unsafe joint feedback for " + kv.first);
         }
         observed_[kv.first] = current;
-        float error = kv.second - current;
-        float next = current;
-        if (homing) {
-            const float max_step = kv.first == "arm_gripper"
-                ? kHomeGripperStepDeg : kHomeArmStepDeg;
-            auto previous = commanded_.find(kv.first);
-            const float last_command = previous == commanded_.end()
-                ? current : previous->second;
-            const float command_error = kv.second - last_command;
-            const float step = std::max(-max_step,
-                                        std::min(max_step, command_error));
-            next = last_command + step;
-        } else {
-            const float kp = kv.first == "arm_gripper" ? kGripperKp : kArmKp;
-            next += kp * error;
-        }
-        if (!homing && kv.first != "arm_gripper" &&
-            std::abs(error) < kFinalArmTargetThresholdDeg) {
-            next = kv.second;
-        }
+        const float max_step = kv.first == "arm_gripper"
+            ? kHomeGripperStepDeg
+            : (homing ? kHomeArmStepDeg : kMotionArmStepDeg);
+        auto previous = commanded_.find(kv.first);
+        const float last_command = previous == commanded_.end()
+            ? current : previous->second;
+        const float command_error = kv.second - last_command;
+        const float step = std::max(-max_step,
+                                    std::min(max_step, command_error));
+        const float next = last_command + step;
         action[kv.first] = next;
         commanded_[kv.first] = next;
     }
@@ -1218,7 +1240,8 @@ bool LeKiwiArmController::advance_step(const Step& step) {
             step_initialized_ = true;
         }
         float t = std::min(1.0f,
-            step_hold_ticks_ / (float)std::max(1, smooth_duration_ticks_));
+            (float)((monotonic_ms() - step_start_ms_) /
+                    std::max(50.0, smooth_duration_ticks_ * 50.0)));
         const float smooth = t * t * t *
                              (10.0f + t * (-15.0f + 6.0f * t));
         for (const auto& goal : smooth_goal_targets_) {
@@ -1230,8 +1253,9 @@ bool LeKiwiArmController::advance_step(const Step& step) {
             carry_start_targets_ = observed_;
             step_initialized_ = true;
         }
-        int duration = config_.carry_duration_ticks();
-        float t = std::min(1.0f, step_hold_ticks_ / (float)duration);
+        float t = std::min(1.0f,
+            (float)((monotonic_ms() - step_start_ms_) /
+                    std::max(50, config_.carry_duration_ms)));
         float smooth = t * t * t * (10.0f + t * (-15.0f + 6.0f * t));
         const std::map<std::string, float> carry_targets = {
             {"arm_shoulder_pan", config_.carry_id1_deg},
@@ -1379,7 +1403,9 @@ bool LeKiwiArmController::advance_step(const Step& step) {
 
 bool LeKiwiArmController::step_reached(const Step& step) const {
     if (step.kind == Kind::SMOOTH_POSE) {
-        if (step_hold_ticks_ < smooth_duration_ticks_ + smooth_settle_ticks_) {
+        const double required_ms =
+            (smooth_duration_ticks_ + smooth_settle_ticks_) * 50.0;
+        if (monotonic_ms() - step_start_ms_ < required_ms) {
             return false;
         }
         float max_error = 0.0f;
@@ -1422,9 +1448,9 @@ bool LeKiwiArmController::step_reached(const Step& step) const {
         return settled && max_error <= hard_limit;
     }
     if (step.kind == Kind::CARRY) {
-        int minimum_ticks = config_.carry_duration_ticks() +
-                            config_.carry_settle_ticks();
-        if (step_hold_ticks_ < minimum_ticks) return false;
+        const double required_ms = config_.carry_duration_ms +
+                                   config_.carry_settle_ms;
+        if (monotonic_ms() - step_start_ms_ < required_ms) return false;
         float arm_error = 0.0f;
         for (const char* joint : {"arm_shoulder_pan", "arm_shoulder_lift",
                                   "arm_elbow_flex", "arm_wrist_flex",
@@ -1493,17 +1519,20 @@ bool LeKiwiArmController::step_reached(const Step& step) const {
 
 bool LeKiwiArmController::tick() {
     if (!active_ || done_ || failed_) return done_ && !failed_;
+    pace_control_tick();
     if (step_index_ >= sequence_.size()) {
         active_ = false;
         done_ = true;
         return true;
     }
+    if (step_start_ms_ <= 0.0) step_start_ms_ = monotonic_ms();
 
     bool advanced = advance_step(sequence_[step_index_]);
     if (advanced) {
         step_index_++;
         step_initialized_ = false;
         step_hold_ticks_ = 0;
+        step_start_ms_ = 0.0;
     }
     if (step_index_ >= sequence_.size()) {
         active_ = false;

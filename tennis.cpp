@@ -451,7 +451,6 @@ int main(int argc, char** argv)
                     cleanup_and_exit();
                     return 1;
                 }
-                if (!startup_controller.done()) usleep(50000);
             }
         } else if (lekiwi_startup_holding) {
             LOGI("Startup gripper=%.1f%s: releasing held object before HOME",
@@ -678,7 +677,6 @@ int main(int argc, char** argv)
                            lekiwi_arm_ctrl->current_step_label());
                     dup2(g_devnull, STDERR_FILENO);
                 }
-                if (!lekiwi_arm_ctrl->done()) usleep(50000);
             }
 
             if (lekiwi_arm_ctrl->done()) {
@@ -846,7 +844,6 @@ int main(int argc, char** argv)
                            lekiwi_arm_ctrl->current_step_label());
                     dup2(g_devnull, STDERR_FILENO);
                 }
-                if (!lekiwi_arm_ctrl->done()) usleep(50000);
             }
 
             if (lekiwi_arm_ctrl->done()) {

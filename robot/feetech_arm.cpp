@@ -4,8 +4,38 @@
 #include <cmath>
 #include <sstream>
 #include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 #include <vector>
+
+namespace {
+double monotonic_ms() {
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+}
+
+void pace_slow_move(double& deadline_ms, int& overrun_warnings) {
+    constexpr double kPeriodMs = 50.0;
+    double now_ms = monotonic_ms();
+    if (deadline_ms <= 0.0) deadline_ms = now_ms;
+    while (now_ms + 0.05 < deadline_ms) {
+        const double remaining_ms = deadline_ms - now_ms;
+        usleep((useconds_t)std::max(1.0, std::ceil(remaining_ms * 1000.0)));
+        now_ms = monotonic_ms();
+    }
+    const double late_ms = now_ms - deadline_ms;
+    if (late_ms > 100.0 && overrun_warnings < 3) {
+        fprintf(stderr,
+                "[FeetechArm] slow-move cycle late by %.1f ms; "
+                "keeping per-command speed limit\n",
+                late_ms);
+        overrun_warnings++;
+    }
+    deadline_ms = late_ms > kPeriodMs
+        ? now_ms + kPeriodMs : deadline_ms + kPeriodMs;
+}
+} // namespace
 
 FeetechArm::FeetechArm(feetech::FeetechBus& bus, const std::string& calibration_path) : bus_(bus) {
     joints_ = {
@@ -311,7 +341,6 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
 
     constexpr float kArmStepDeg = 1.25f;       // 25 deg/s at 20 Hz
     constexpr float kGripperStepDeg = 2.0f;   // gripper may move faster
-    constexpr int kPeriodUs = 50000;
     constexpr int kMaxTicks = 500;             // 25 seconds maximum
 
     fprintf(stderr,
@@ -346,7 +375,11 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
         commanded[target.first] = actual->second;
     }
 
+    const double move_start_ms = monotonic_ms();
+    double next_tick_deadline_ms = move_start_ms;
+    int overrun_warnings = 0;
     for (int tick = 0; tick < kMaxTicks; tick++) {
+        pace_slow_move(next_tick_deadline_ms, overrun_warnings);
         std::map<std::string, float> next;
         bool command_reached = true;
         for (const auto& target : pose) {
@@ -385,11 +418,10 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
         if (feedback_reached) {
             if (settle_ms > 0) usleep(settle_ms * 1000);
             fprintf(stderr, "[FeetechArm] slow move complete in %.2f s\n",
-                    (tick + 1) * 0.05f);
+                    (monotonic_ms() - move_start_ms) / 1000.0);
             last_error_.clear();
             return true;
         }
-        usleep(kPeriodUs);
     }
 
     std::ostringstream error;
