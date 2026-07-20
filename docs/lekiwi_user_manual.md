@@ -388,6 +388,16 @@ config/lekiwi_pick_config.txt
 ./build/tennis test-new-arm auto task place-cycle
 ```
 
+分阶段姿态确认后，可以用一条命令演示完整桶流程：
+
+```bash
+./run_bucket_place_demo.sh
+```
+
+该命令从 `FIND_BUCKET` 开始，依次完成视觉找桶、靠近、按 `bucket_stop_size_px` 停车、
+安全接近、下降、打开夹爪、撤离，并在一次循环完成后自动退出。它不会找球或抓球；
+启动时保留夹爪当前位置并平滑进入 CARRY。首次应取出夹爪内的球进行空载测试。
+
 `place-approach` 只到桶口上方的高位收回点；`place-release` 再平滑向前、向下进入
 放球姿态，但不会打开夹爪。两者都安全后才运行 `place-cycle`。完整顺序是：收球姿态
 → 高位收回点 → 向前下降到放球姿态 → 打开夹爪 → 原路撤离 → 收球姿态。

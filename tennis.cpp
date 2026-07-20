@@ -243,6 +243,7 @@ static void usage(const char* prog) {
     LOGI("  Example legacy: %s tennis.rknn /dev/ttyS3 0 /dev/ttyUSB1", prog);
     LOGI("  Example lekiwi: %s tennis.rknn /dev/ttyACM0 0 /dev/ttyACM0 lekiwi", prog);
     LOGI("  Example lekiwi safe chase test: %s tennis.rknn auto 0 auto lekiwi --stop-after-chase", prog);
+    LOGI("  Example bucket/place demo: %s tennis.rknn auto 0 auto lekiwi --bucket-place-demo", prog);
     LOGI("  %s test-uvc   [uvc_index]               -- capture one frame -> capture.jpg", prog);
     LOGI("  %s test-yolo  <model.rknn> [uvc_index]  -- detect one frame  -> result.jpg", prog);
     LOGI("  %s test-motor [uart_dev] [speed=N]       -- motor test", prog);
@@ -352,6 +353,7 @@ int main(int argc, char** argv)
     const char* platform   = (argc >= 6) ? argv[5] : "legacy";
     bool use_lekiwi = (strcmp(platform, "lekiwi") == 0 || strcmp(platform, "omni") == 0);
     bool stop_after_chase = false;
+    bool bucket_place_demo = false;
     const char* stop_env = getenv("LEKIWI_STOP_AFTER_CHASE");
     if (stop_env && strcmp(stop_env, "0") != 0 && strcmp(stop_env, "false") != 0)
         stop_after_chase = true;
@@ -362,11 +364,17 @@ int main(int argc, char** argv)
     for (int i = 6; i < argc; i++) {
         if (strcmp(argv[i], "--stop-after-chase") == 0) {
             stop_after_chase = true;
+        } else if (strcmp(argv[i], "--bucket-place-demo") == 0) {
+            bucket_place_demo = true;
         } else {
             LOGE("Unknown option: %s", argv[i]);
             usage(argv[0]);
             return 1;
         }
+    }
+    if (bucket_place_demo && !use_lekiwi) {
+        LOGE("--bucket-place-demo requires platform=lekiwi");
+        return 1;
     }
     const int stop_center_offset = use_lekiwi ? 0 : STOP_CENTER_OFFSET;
 
@@ -420,7 +428,32 @@ int main(int argc, char** argv)
             return 1;
         }
         lekiwi_startup_holding = lekiwi_startup_gripper > 25.0f;
-        if (lekiwi_startup_holding) {
+        if (bucket_place_demo) {
+            LOGI("Bucket/place demo: preserving gripper position %.1f%s",
+                 lekiwi_startup_gripper,
+                 gripper_overloaded ? " overload=0x20" : "");
+            LOGI("Bucket/place demo: moving arm to CARRY at limited speed");
+            LeKiwiArmController startup_controller(*ft_arm_ptr);
+            if (!startup_controller.begin_stage("carry")) {
+                LOGE("Failed to prepare CARRY for bucket/place demo: %s",
+                     startup_controller.last_error().c_str());
+                cleanup_and_exit();
+                return 1;
+            }
+            while (!startup_controller.done()) {
+                if (g_stop_requested) {
+                    cleanup_and_exit();
+                    return 0;
+                }
+                if (!startup_controller.tick() || startup_controller.failed()) {
+                    LOGE("Failed to prepare CARRY for bucket/place demo: %s",
+                         startup_controller.last_error().c_str());
+                    cleanup_and_exit();
+                    return 1;
+                }
+                if (!startup_controller.done()) usleep(50000);
+            }
+        } else if (lekiwi_startup_holding) {
             LOGI("Startup gripper=%.1f%s: releasing held object before HOME",
                  lekiwi_startup_gripper,
                  gripper_overloaded ? " overload=0x20" : "");
@@ -431,16 +464,21 @@ int main(int argc, char** argv)
                 return 1;
             }
         }
-        LOGI("Returning LeKiwi arm to HOME at limited speed");
-        if (!ft_arm_ptr->grab_pos()) {
-            LOGE("Failed to return Feetech arm to HOME: %s",
-                 ft_arm_ptr->last_error().c_str());
-            cleanup_and_exit();
-            return 1;
+        if (!bucket_place_demo) {
+            LOGI("Returning LeKiwi arm to HOME at limited speed");
+            if (!ft_arm_ptr->grab_pos()) {
+                LOGE("Failed to return Feetech arm to HOME: %s",
+                     ft_arm_ptr->last_error().c_str());
+                cleanup_and_exit();
+                return 1;
+            }
         }
         LOGI("LeKiwi platform initialized (Feetech %s)", uart_dev);
         if (stop_after_chase) {
             LOGI("LeKiwi safe test enabled: stop after confirmed chase/ready state");
+        }
+        if (bucket_place_demo) {
+            LOGI("Bucket/place demo enabled: FIND_BUCKET -> APPROACH -> PUT_BALL -> exit");
         }
     } else {
         motor_ptr = new Motor(MotorDriverType::UART, uart_dev);
@@ -518,7 +556,8 @@ int main(int argc, char** argv)
     bool align_kicking  = false;
 
     // ── Game state ────────────────────────────────────────────────────────────
-    GameState game_state = GameState::CHASE_BALL;
+    GameState game_state = bucket_place_demo
+        ? GameState::FIND_BUCKET : GameState::CHASE_BALL;
     int  stop_after_chase_confirm = 0;
     static const int STOP_AFTER_CHASE_CONFIRM = 3;
     int  bucket_lost_cnt  = 0;   // 连续找不到桶的帧数
@@ -811,6 +850,12 @@ int main(int argc, char** argv)
             }
 
             if (lekiwi_arm_ctrl->done()) {
+                if (bucket_place_demo) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[DEMO] bucket/place sequence completed successfully\n");
+                    cleanup_and_exit();
+                    return 0;
+                }
                 if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
                 lekiwi_arm_log_tick = 0;
                 lekiwi_move.reset();
