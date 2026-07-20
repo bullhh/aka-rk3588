@@ -1,59 +1,42 @@
-# LeKiwi 三轮机器人机械臂调试手册
+# LeKiwi Linux/StarryOS 开发调试手册
 
-本文面向当前三轮 LeKiwi/Feetech 机器人，说明如何编译、部署和运行
-`aka-rk3588` 用户态程序，以及如何判断机械臂动作是否正常。本文不适用于旧的
-两轮 ESP32/ZP10D 方案。
+本文只说明开发板启动、源码同步、编译部署、底层测试、日志定位和恢复手段。机器人
+功能、状态机、参数含义和现场调参见
+[`lekiwi_user_manual.md`](lekiwi_user_manual.md)。
 
-当前硬件约定：
+适用环境：
 
 ```text
-ID1：肩部水平旋转        ID6：夹爪
-ID2：肩部抬升            ID7：左轮
-ID3：肘部弯曲            ID8：后轮
-ID4：腕部俯仰            ID9：右轮
-ID5：腕部旋转
-Linux 设备节点：/dev/ttyACM0
-Linux/Starry 通用路径：userspace libusb CDC，设备参数使用 auto
-模型：models/tennis.rknn
-校准文件：config/lekiwi_calibration.json
-抓取参数：config/lekiwi_pick_config.txt
+本地源码：/home/szy/work/robot/tripod/aka-rk3588
+tgoskits：/home/szy/work/robot/tripod/tgoskits
+共享rootfs：/home/orangepi/robot/aka-rk3588
+板卡服务：10.3.10.60:2999
+板卡类型：OrangePi-5-Plus-robot
+Linux账号：orangepi
+Feetech参数：auto
 ```
 
-## 1. 安全准备
+开发板 IP 由 DHCP 分配，不能把文档或同步脚本中的示例地址当成固定地址。
 
-1. 把机器人架起，保证三个轮子离地，或确保底盘周围没有障碍物。
-2. 取下夹爪中的球，检查线束不会被关节夹住。
-3. 保证机械臂运动范围内没有人手、工具和硬物。
-4. 第一次执行新参数时随时准备按 `Ctrl-C`。
-5. 手动移动机械臂前先关闭扭矩，不要强掰带扭矩的舵机。
+## 1. 安全规则
 
-关闭扭矩：
+1. 首次测试底盘时架起三个轮子。
+2. 首次测试机械臂参数时取出球，检查线束和周围障碍物。
+3. `place-cycle`、`ik-put` 和桶演示会打开夹爪。
+4. 手动移动机械臂前必须关闭扭矩。
+5. 同一时间只保持一个 Linux 或 StarryOS 板卡租约。
+6. 准备使用 `Ctrl-C`；串口终端退出使用 `Ctrl-A x`。
+
+紧急恢复：
 
 ```bash
+./build/tennis test-base auto stop
 ./build/tennis test-feetech auto torque-off
 ```
 
-## 2. 源码目录和共享 rootfs
+## 2. 启动开发板 Linux
 
-本地主源码目录：
-
-```text
-/home/szy/work/robot/tripod/aka-rk3588
-```
-
-Orange Pi Linux/Starry 共享 rootfs 中的推荐目录：
-
-```text
-/home/orangepi/robot/aka-rk3588
-```
-
-推荐在开发板 Linux 中同步源码并编译，执行 `sync` 后再重启进入 StarryOS。
-StarryOS 直接运行共享 rootfs 中由 Linux 构建的 AArch64 动态 ELF，不在 StarryOS
-中编译。
-
-### 2.1 调试阶段启动开发板 Linux
-
-板卡由 board server 管理。以下命令应在 `tgoskits` 仓库根目录执行：
+在本地 `tgoskits` 仓库执行：
 
 ```bash
 cd /home/szy/work/robot/tripod/tgoskits
@@ -63,31 +46,127 @@ cargo board connect \
   --port 2999
 ```
 
-该命令申请并启动开发板 Linux，同时连接串口。通过串口启动日志或登录后的网络命令
-查看机器人当前 IP 地址：
+该命令申请板卡、启动 Linux 并进入串口。登录后查看当前 IP：
 
 ```bash
-ip addr
-ip -4 addr
 hostname -I
+ip -4 addr
 ```
 
-记录 IP 后，另开一个终端通过 SSH 同步、编译和测试：
+另开终端连接：
 
 ```bash
 ssh orangepi@<board-ip>
 ```
 
-不要只依赖同步脚本中的默认 IP；DHCP 地址可能变化。切换系统前先在 Linux 中执行
-`sync`，再退出串口并释放板卡租约。串口退出通常使用：
+如果第一次启动出现 `Card did not respond to voltage select` 或 `fs_devread read error`，
+在 U-Boot 提示符执行一次：
+
+```text
+reset
+```
+
+若连续重试仍失败，检查存储卡、电源和板卡状态，不要归因于用户态程序。
+
+## 3. 同步源码
+
+推荐使用仓库脚本并显式指定本次 IP：
+
+```bash
+cd /home/szy/work/robot/tripod/aka-rk3588
+REMOTE=orangepi@<board-ip> \
+REMOTE_PROJECT=/home/orangepi/robot/aka-rk3588 \
+./scripts/sync_to_orangepi.sh
+```
+
+脚本排除 `.git`、`build/` 和运行生成的图片。脚本当前存在历史默认 IP，因此调试时
+应始终显式传入 `REMOTE`。
+
+手工同步可使用：
+
+```bash
+rsync -az --delete \
+  --exclude .git \
+  --exclude build \
+  /home/szy/work/robot/tripod/aka-rk3588/ \
+  orangepi@<board-ip>:/home/orangepi/robot/aka-rk3588/
+```
+
+注意：`--delete` 会删除远端不在本地源码中的文件。同步前先把开发板上自动学习或
+手工调出的稳定 `config/lekiwi_pick_config.txt` 对比并同步回本地：
+
+```bash
+diff -u \
+  config/lekiwi_pick_config.txt \
+  <(ssh orangepi@<board-ip> \
+    'cat /home/orangepi/robot/aka-rk3588/config/lekiwi_pick_config.txt')
+```
+
+## 4. 在 Linux 编译
+
+推荐在开发板 Linux 原生编译，以避免 GLIBC 和动态库版本不匹配：
+
+```bash
+ssh orangepi@<board-ip>
+cd /home/orangepi/robot/aka-rk3588
+PKG_CONFIG_PATH=/home/orangepi/miniforge3/envs/rknn/lib/pkgconfig \
+LD_LIBRARY_PATH=/home/orangepi/miniforge3/envs/rknn/lib:${LD_LIBRARY_PATH:-} \
+./build_rk3588.sh -b Release -l INFO
+```
+
+增量编译：
+
+```bash
+cd /home/orangepi/robot/aka-rk3588
+cmake --build build --parallel "$(nproc)"
+```
+
+成功现象：
+
+```text
+[100%] Built target tennis
+```
+
+检查产物和依赖：
+
+```bash
+file build/tennis
+ls -lh build/tennis models/tennis.rknn
+ldd build/tennis
+```
+
+`build/tennis` 应为 AArch64 ELF。若出现 `GLIBC_x.xx not found`，不要替换系统库，
+回到开发板 Linux 重新原生编译。
+
+本地交叉编译仅在工具链和目标 rootfs 动态库完全匹配时使用：
+
+```bash
+cd /home/szy/work/robot/tripod/aka-rk3588
+./build_rk3588.sh -b Release -l INFO
+scp build/tennis \
+  orangepi@<board-ip>:/home/orangepi/robot/aka-rk3588/build/tennis
+```
+
+## 5. 让 StarryOS 使用最新文件
+
+Linux 和 StarryOS 共用物理 rootfs。必须先在 Linux 写入并同步：
+
+```bash
+cd /home/orangepi/robot/aka-rk3588
+test -x build/tennis
+test -f models/tennis.rknn
+test -f config/lekiwi_calibration.json
+test -f config/lekiwi_pick_config.txt
+sync
+```
+
+退出 Linux 串口：
 
 ```text
 Ctrl-A x
 ```
 
-### 2.2 调试阶段启动 StarryOS
-
-退出 Linux 会话并释放租约后，在 `tgoskits` 根目录执行：
+然后在本地启动 StarryOS：
 
 ```bash
 cd /home/szy/work/robot/tripod/tgoskits
@@ -99,108 +178,7 @@ cargo xtask starry board \
   --port 2999
 ```
 
-正常现象是命令取得板卡租约，启动 StarryOS，并通过串口进入 `root@starry` shell。
-进入 shell 后再切换到共享 rootfs 中的用户程序目录运行测试。
-
-如果提示没有可用板卡，先确认上一个 Linux 或 StarryOS 会话已经退出并释放租约。
-同一时刻不要启动两个板卡会话。
-
-## 3. 同步源码到开发板
-
-使用仓库脚本：
-
-```bash
-cd /home/szy/work/robot/tripod/aka-rk3588
-./scripts/sync_to_orangepi.sh
-```
-
-默认目标是：
-
-```text
-orangepi@10.3.10.24:/home/orangepi/robot/aka-rk3588
-```
-
-该地址只是脚本默认值。调试阶段应先用 `cargo board connect` 从串口查看当前 IP，
-再通过 `REMOTE` 传入实际地址。
-
-开发板地址或目录不同时：
-
-```bash
-REMOTE=orangepi@<board-ip> \
-REMOTE_PROJECT=/home/orangepi/robot/aka-rk3588 \
-./scripts/sync_to_orangepi.sh
-```
-
-脚本不会同步本地 `build/`。也可以手工执行：
-
-```bash
-rsync -az --delete \
-  --exclude .git \
-  --exclude build \
-  /home/szy/work/robot/tripod/aka-rk3588/ \
-  orangepi@<board-ip>:/home/orangepi/robot/aka-rk3588/
-```
-
-## 4. 编译程序
-
-### 4.1 推荐：开发板 Linux 原生编译
-
-```bash
-ssh orangepi@<board-ip>
-cd /home/orangepi/robot/aka-rk3588
-PKG_CONFIG_PATH=/home/orangepi/miniforge3/envs/rknn/lib/pkgconfig \
-LD_LIBRARY_PATH=/home/orangepi/miniforge3/envs/rknn/lib:${LD_LIBRARY_PATH:-} \
-./build_rk3588.sh -b Release -l INFO
-```
-
-成功现象：
-
-```text
-[100%] Built target tennis
-=== Build done: .../build/tennis ===
-Size: <非零字节数>
-```
-
-检查产物：
-
-```bash
-file build/tennis
-ls -lh build/tennis models/tennis.rknn
-```
-
-`build/tennis` 应为 AArch64 ELF，模型文件必须存在。
-
-### 4.2 可选：开发机交叉编译
-
-开发机安装 `aarch64-linux-gnu-g++` 后执行：
-
-```bash
-cd /home/szy/work/robot/tripod/aka-rk3588
-./build_rk3588.sh -b Release -l INFO
-scp build/tennis \
-  orangepi@<board-ip>:/home/orangepi/robot/aka-rk3588/build/tennis
-```
-
-交叉编译产物仍要求 rootfs 中存在兼容的 `librknnrt.so`、`libuvc`、`libusb-1.0`
-和 `libturbojpeg`。不确定运行库是否匹配时，优先在开发板 Linux 原生编译。
-如果运行时报 `GLIBC_x.xx not found`，不要替换开发板系统库，直接回到4.1节在开发板
-Linux中重新编译。
-
-## 5. 让文件进入 StarryOS 可见的 rootfs
-
-在开发板 Linux 中执行：
-
-```bash
-cd /home/orangepi/robot/aka-rk3588
-test -x build/tennis
-test -f models/tennis.rknn
-test -f config/lekiwi_calibration.json
-test -f config/lekiwi_pick_config.txt
-sync
-```
-
-执行 `sync`，退出 Linux 串口并释放租约，再按照 2.2 节的命令启动 StarryOS。
-StarryOS 启动后检查：
+进入 `root@starry` 后：
 
 ```sh
 cd /home/orangepi/robot/aka-rk3588
@@ -208,193 +186,93 @@ ls -l build/tennis models/tennis.rknn \
   config/lekiwi_calibration.json config/lekiwi_pick_config.txt
 ```
 
-如果 StarryOS 找不到新文件，先回 Linux 检查文件是否写入正确的物理 rootfs，以及
-重启前是否执行了 `sync`。
+StarryOS 不编译 C++ 程序，直接运行 Linux 已经构建的二进制。如果看不到新文件，回
+Linux 检查写入目录、时间戳以及是否执行 `sync`。
 
-## 6. 推荐调试顺序
+## 6. 最小验证顺序
 
-每次修改机械臂代码或参数后按以下顺序验证。前一步失败时不要运行完整闭环。
+每次更改控制代码或配置后按顺序执行。前一步失败时不要继续完整动作。
 
-### 6.1 扫描电机
-
-Linux 和 StarryOS 通用命令：
+### 6.1 配置静态校验
 
 ```bash
 cd /home/orangepi/robot/aka-rk3588
-./build/tennis test-feetech auto scan
+./build/tennis test-new-arm auto config-check
 ```
 
-正常现象：
+该命令不打开总线、不让机械臂动作。它检查抓球/放球关节范围和轨迹走廊。
+
+### 6.2 Feetech总线
+
+```bash
+./build/tennis test-feetech auto scan
+./build/tennis test-feetech auto read
+```
+
+正常结果：
 
 ```text
 found 9 motor(s): 1 2 3 4 5 6 7 8 9
 ```
 
-`auto` 优先使用 userspace libusb CDC；Linux 下 claim 失败时回退到
-`/dev/ttyACM0`。缺少某个 ID 时先检查电源、线缆、舵机 ID 和总线连接。
+Linux 常见日志：
 
-读取状态：
-
-```bash
-./build/tennis test-feetech auto read
+```text
+libusb_open ... LIBUSB_ERROR_ACCESS
+falling back to TTY /dev/ttyACM0
+opened TTY /dev/ttyACM0 baud=1000000
 ```
 
-重点观察位置、速度、电压和温度。
+这是正常回退。StarryOS 应选择 libusb CDC。`scan` 后必须能在下一进程继续 `read`；
+若出现 `BUSY`，检查是否仍有旧进程占用接口。
 
-### 6.2 检查校准
+偶发一次 `rx timeout waiting for header/params` 时，先单独重试命令。若重试成功且
+`scan/read` 完整，不要把它误判为轨迹错误；若连续复现，检查供电、USB线和舵机总线。
+
+### 6.3 校准
 
 ```bash
 ./build/tennis test-new-arm auto calib-check
 ```
 
-正常现象：
-
-```text
-calibration ok
-```
-
-只有在机械结构变化、更换舵机或确认原校准失效时才重新校准：
+只有更换舵机、机械结构改变或确认校准失效时执行：
 
 ```bash
 ./build/tennis test-new-arm auto calibrate
 ```
 
-首次校准时程序会确认ID1～ID6存在并关闭扭矩。按终端提示，把除连续旋转腕部外的
-各关节和夹爪分别缓慢移动到两个安全端点，确保每个关节都覆盖完整可用范围，然后按
-回车。程序自动计算中点和零位并写入：
+校准会关闭 ID1～ID6 扭矩并要求手动移动到安全端点，结果写入
+`config/lekiwi_calibration.json`。不要把动作姿态写进校准文件。
 
-```text
-config/lekiwi_calibration.json
-```
-
-校准文件保存原始编码范围和零点，不要用抓球动作参数替代它。校准完成后重新执行
-`calib-check`；失败时不要继续运行机械臂动作。
-
-### 6.3 测试待机姿态和夹爪
+### 6.4 不开夹爪的机械臂测试
 
 ```bash
-./build/tennis test-new-arm auto pos
-./build/tennis test-new-arm auto set arm_gripper 60
-./build/tennis test-new-arm auto set arm_gripper 0
+./build/tennis test-new-arm auto task home
+./build/tennis test-new-arm auto task carry
+./build/tennis test-new-arm auto task place-approach
+./build/tennis test-new-arm auto task place-release
 ```
 
-当前约定：
+`place-release` 会先到固定接近姿态，再到配置的最终放球姿态，但不会打开夹爪。命令
+从舵机实际位置起步；目标已经到位时几乎不动作是正常现象。
 
-```text
-arm_gripper 60：打开
-arm_gripper 0：完全关闭
-```
-
-正常现象是机械臂安全到达待机姿态、夹爪方向正确、到达机械限位后不继续强顶。
-
-### 6.4 单独测试 IK 抓取动作
-
-机械臂流畅度和角度的主要调试命令：
+### 6.5 会开夹爪的机械臂测试
 
 ```bash
 ./build/tennis test-new-arm auto ik-pick
+./build/tennis test-new-arm auto task place-cycle
+./build/tennis test-new-arm auto ik-put
 ```
 
-动作大致为：
+执行前取出球或准备接球。成功结果为：
 
 ```text
-HOME
--> 按grab_id1～grab_id5确定基础夹球姿态
--> 打开夹爪，自动计算安全接近轨迹
--> 应用前后、左右、上下和俯仰偏移
--> 到达GRAB
--> 闭合夹爪
--> CLEAR（沿原下降路径抬离地面）
--> CARRY（约2秒五次S曲线进入carry_id1～carry_id5）
--> 保持约0.5秒，确认静止后允许车轮启动
+done=1 failed=0
 ```
 
-正常现象：
+### 6.6 三轮底盘
 
-- step 持续前进，最终显示 `done=1 failed=0`。
-- 肩、肘和腕部连续移动，没有长时间停顿后突然跳动。
-- 夹爪在接近球前打开，到达抓取点后闭合。
-- 抬升时夹爪不碰地面、底盘或相机支架。
-- 有球时最终应看到 `holding=yes`；无球动作测试出现 `holding=no` 属于正常。
-
-每次开始抓取都会打印解析结果：
-
-```text
-[LeKiwiArmController] grab ids=(-12.0,37.7,42.1,0.2,0.0) \
-offset_cm=(forward=0.0,lateral=0.0,height=0.0) pitch_offset=0.0 \
-resolved=(pan=-12.0,x=0.1199,y=-0.0600,pre_y=0.1211,pitch=80.0)
-```
-
-修改配置后先检查这行，确认 `ids` 和 `offset_cm` 是本次输入，`resolved` 是程序实际
-使用的最终目标。若日志仍是旧值，说明旧进程没有退出或修改的不是当前目录下的文件。
-
-#### 夹球与收球基础姿态
-
-参数位于 `config/lekiwi_pick_config.txt`，角度均为标定后的度数，不是0～4095原始值：
-
-```bash
-cd /home/orangepi/robot/aka-rk3588
-vi config/lekiwi_pick_config.txt
-```
-
-```text
-grab_id1_deg ～ grab_id5_deg    夹爪闭合时的ID1～ID5基础姿态
-carry_id1_deg ～ carry_id5_deg  抬球后、启动车轮前的ID1～ID5收臂姿态
-```
-
-ID6夹爪不记录到两组姿态中，继续使用：
-
-```text
-gripper_open_delta_deg = 60
-gripper_close_delta_deg = -60
-```
-
-当前CARRY时间参数：
-
-```text
-carry_duration_ms = 2000   # 收臂S曲线约2秒
-carry_settle_ms = 500      # 到位后再稳定约0.5秒
-```
-
-优先使用下面的位置偏移解决现场误差。只有零偏移仍无法得到合理姿态时，才重新手动
-记录并替换 `grab_id*`；不要用 `carry_id*` 直接夹地面上的球。
-
-#### 快速调整夹球位置
-
-| 现象 | 修改方法 |
-| --- | --- |
-| 夹爪伸过球 | 减小 `grab_forward_offset_cm`，例如 `0 → -0.5` |
-| 夹爪够不到球 | 增大 `grab_forward_offset_cm`，例如 `0 → +0.5` |
-| 夹爪在球左边 | 减小 `grab_lateral_offset_cm`，使夹爪向右 |
-| 夹爪在球右边 | 增大 `grab_lateral_offset_cm`，使夹爪向左 |
-| 夹爪比球低 | 增大 `grab_height_offset_cm`，例如 `0 → +0.5` |
-| 夹爪比球高 | 减小 `grab_height_offset_cm`，例如 `0 → -0.5` |
-| 夹爪俯仰不合适 | 每次调整 `grab_pitch_offset_deg` 约 `5` 度 |
-
-三个位置偏移的单位均为厘米。程序自动把前后、上下换算为ID2/ID3，把左右换算为
-ID1，并补偿ID4保持原夹爪朝向。建议每次只改一个参数、每次只改0.5厘米。
-
-修改后不需要重新编译，必须退出旧进程并重新运行：
-
-```bash
-./build/tennis test-new-arm auto ik-pick
-```
-
-#### 常见异常
-
-| 现象 | 优先检查 |
-| --- | --- |
-| 动作一顿一顿 | `tick()` 是否被视觉帧率限制 |
-| 某阶段停几秒 | `GAP` 是否按视觉帧计数 |
-| 修改参数但动作没变 | 检查启动日志中的 `offset_cm`，确认文件路径和旧进程 |
-| 零偏移姿态不合理 | 重新记录 `grab_id1_deg～grab_id5_deg` |
-| 收臂停止姿态不合理 | 检查 `carry_id1_deg～carry_id5_deg` |
-| 收臂太快或太慢 | 调整 `carry_duration_ms`，不要直接提高控制频率 |
-| USB 超时或校验错误 | 降低更新频率，检查供电、USB和线缆 |
-
-### 6.5 测试三轮底盘
-
-必须先架起机器人：
+架起机器人后执行：
 
 ```bash
 ./build/tennis test-base auto forward 0
@@ -406,107 +284,106 @@ ID1，并补偿ID4保持原夹爪朝向。建议每次只改一个参数、每�
 ./build/tennis test-base auto stop
 ```
 
-正常现象是三个轮子按全向底盘映射协调运行，测试结束后自动停车。
-
-### 6.6 视觉与安全追球
+### 6.7 摄像头和NPU
 
 ```bash
 ./run_vision_once.sh
 ```
 
-同一命令可在 Linux 和 Starry 使用：Linux 会先编译再运行，Starry 会跳过编译并
-运行共享根文件系统中的 `build/tennis`。默认使用 NPU core 0，正常情况下返回0，
-检测一次并生成 `capture.jpg` 和 `result.jpg`。
+Linux 会先构建，StarryOS 直接使用已有二进制。StarryOS 脚本默认设置
+`RKNN_CORE_MASK=0`。真实闭环暂不建议强制三核 NPU，因为历史上出现过异常框。
 
-架空运行安全追球：
-
-```bash
-./run_lekiwi_test.sh
-```
-
-正常现象是出现 `LEKIWI_CHASE`，确认控制输出后打印 `STOP_AFTER_CHASE` 并停车，
-不会进入抓球和找桶。
-
-停车参数也在 `config/lekiwi_pick_config.txt`：
-
-| 参数 | 当前值与准确含义 | 增减效果 |
-| --- | --- | --- |
-| `ball_stop_size_px` | `155`；球检测框宽、高中的较大值 | 增大：更靠近球停车；减小：更远停车 |
-| `ball_stop_tolerance_px` | `15`；允许 `155±15`，即140～170像素 | 增大：容易停车但前后误差大；减小：距离一致但可能反复调整 |
-| `ball_center_tolerance_px` | `30`；球心允许偏离目标中心±30像素 | 增大：容易抓取但左右误差大；减小：对得更正但可能左右摆动 |
-| `ball_stable_frames` | `2`；距离和球心条件连续满足2帧 | 增大：过滤误检但等待更久 |
-
-停车距离不对时先调 `ball_stop_size_px`，不要立即用机械臂前后偏移补偿。停车位置已经
-稳定但夹爪仍有小误差时，再调三个 `grab_*_offset_cm`。当前Starry约2.3fps，连续2帧
-约需0.9秒。
-
-StarryOS 下脚本自动使用 `RKNN_CORE_MASK=0`。当前不要用三核 NPU 执行真实闭环，
-因为三核模式曾出现错误 bbox。
-
-### 6.7 完整流程
-
-只有前述测试全部通过、机器人架起且周围安全时才执行：
-
-```bash
-./run_lekiwi_full.sh
-```
-
-关键状态：
+以下 UVC 描述符日志通常不影响采集：
 
 ```text
-LEKIWI_CHASE
--> PICK_BALL
-PICK_BALL done
--> FIND_BUCKET
--> PUT_BALL
-PUT_BALL done
--> LEKIWI_CHASE
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+attempt to claim already-claimed interface 1
 ```
 
-出现以下情况应立即停止：底盘在机械臂动作期间仍移动、机械臂撞限位、同一步长时间
-不前进、舵机抖动或过热，以及连续 USB timeout/checksum/status ID 错误。
+是否正常应以随后出现 `UvcCapture streaming 640x480 @ 30 fps` 为准。
 
-## 7. 推荐调参和记录方法
+### 6.8 状态机测试
 
-当前动作算法参考 Desktop-Wanderer。机械臂动作已固定为约20 Hz，GAP约300 ms，
-HOME使用关节空间缓启动，夹球后先CLEAR，再以关节空间五次 S 曲线进入CARRY。
+```bash
+./run_lekiwi_test.sh          # 架空追球，确认后退出
+./run_bucket_place_demo.sh    # 找桶、靠近、放球一次后退出
+./run_lekiwi_full.sh          # 完整持续闭环
+```
 
-1. 先固定球和车的位置，运行 `test-new-arm auto ik-pick`。
-2. 按“前后→左右→上下→俯仰”顺序，每次只调整一个参数并录像。
-3. 单独动作能够夹球后，再运行安全追球，确认停车尺寸和球心误差。
-4. 最后测试完整流程，并对比独立动作和完整流程的节奏。
-5. 当前保持20 Hz；不要用提高频率掩盖姿态或停车位置问题。
-6. `GAP` 应保持约300 ms，不能乘上视觉帧间隔。
+桶演示和完整闭环会驱动小车，必须现场观察，不应在无法看到障碍物时通过 SSH 盲跑。
 
-完整闭环抓取失败时会尝试多组前后/高度偏移。某一组成功后，程序会把成功的
-`grab_forward_offset_cm` 和 `grab_height_offset_cm` 写回配置文件，但不会覆盖
-`grab_id*` 和 `carry_id*`。测试前后可用 `git diff -- config/lekiwi_pick_config.txt`
-检查自动保存结果。
+## 7. 日志定位
 
-建议每次记录：
+### 7.1 `communication failure` 不一定是通信错误
+
+上层状态机的历史文案可能打印：
 
 ```text
-日期：
-系统：Linux / StarryOS
-提交：
-动作更新周期：
-参数修改：
-启动日志中的 ids：
-启动日志中的 offset_cm：
-启动日志中的 resolved：
-BALL_READY 时 size/off：
-ik-pick 总时长：
-是否流畅：
-是否成功夹球：
-异常日志：
-视频文件：
+PUT_BALL communication failure, stopping: <具体原因>
 ```
 
-## 8. 常用恢复命令
+应以冒号后的具体原因判断：
+
+- `unsafe place trajectory`：配置或轨迹安全校验失败。
+- `rx timeout`：Feetech通信超时。
+- `LIBUSB_ERROR_BUSY`：USB接口占用或未释放。
+- `motor id=N returned error status`：对应舵机状态错误。
+
+### 7.2 放球配置校验
+
+当前固定接近姿态与 `place_id1～place_id5` 最终姿态独立。若提示最终姿态没有比接近
+姿态低至少0.5cm，说明 ID2/ID3 组合并未产生下降；ID3更负不一定代表末端更低。
+
+修改后先运行：
+
+```bash
+./build/tennis test-new-arm auto config-check
+```
+
+### 7.3 修改配置但动作没变
+
+```bash
+pwd
+stat config/lekiwi_pick_config.txt build/tennis
+pgrep -af tennis
+```
+
+确认修改的是当前目录、旧进程已经退出、Linux/Starry 使用同一个 rootfs。程序可能在
+抓球成功后自动写回偏移，因此调试结束要对比开发板配置和仓库配置。
+
+### 7.4 动作完成但肉眼看不到
+
+S曲线命令是绝对目标，不会先回 HOME。重复执行同一姿态时可能只调整少量关节。需要
+演示明显动作时先执行 `task home` 或另一个安全姿态，再执行目标命令。
+
+## 8. 恢复和采集信息
+
+停止底盘和关闭扭矩：
 
 ```bash
 ./build/tennis test-base auto stop
 ./build/tennis test-feetech auto torque-off
-./build/tennis test-new-arm auto pose-list
-./build/tennis test-new-arm auto pos
 ```
+
+确认占用：
+
+```bash
+pgrep -af tennis
+ls -l /dev/ttyACM0
+```
+
+建议每次问题报告保存：
+
+```text
+系统：Linux / StarryOS
+aka提交：git rev-parse --short HEAD
+tgoskits提交：git -C ../tgoskits rev-parse --short HEAD
+配置：config/lekiwi_pick_config.txt
+命令：完整命令行
+日志：从程序启动到失败的完整输出
+现象：机械臂、轮子、球和桶的实际位置
+供电：电压和是否发生重启
+```
+
+开发板稳定参数同步回仓库后再提交，避免下一次部署把实机调参覆盖。

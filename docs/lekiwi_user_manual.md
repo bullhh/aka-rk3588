@@ -1,335 +1,203 @@
-# LeKiwi 网球机器人使用说明书
+# LeKiwi 三轮网球机器人使用说明书
 
-本文面向现场使用和调试，说明当前 C++ 工程的设计、运行方法、校准方法、抓取调参、桶识别和常见问题处理。
+本文说明当前 `aka-rk3588` 用户态程序的功能、运行方式、配置参数、动作流程和现场
+调参方法。Linux/StarryOS 启动、源码同步、编译部署和底层故障定位见
+[`lekiwi_arm_debug_guide.md`](lekiwi_arm_debug_guide.md)。
 
-## 1. 工程用途
+本文只适用于当前三轮全向底盘、Feetech STS3215 机械臂，不适用于旧的两轮
+ESP32/ZP10D 机器人。
 
-本工程运行在 RK3588/Orange Pi 上，用 C++ 实现完整用户态闭环：
+## 1. 当前能力
 
-```text
-摄像头采集
--> RKNN 网球检测
--> 三轮底盘追球和对准
--> Feetech 机械臂抓球
--> 红色桶搜索
--> 靠近桶并放球
--> 回到追球
-```
-
-工程保留旧 aka-rk3588 平台代码，但当前机器人使用 LeKiwi/Feetech 路径。
-
-当前硬件约定：
+完整闭环为：
 
 ```text
-设备地址：orangepi@10.3.10.24
-工程目录：/home/orangepi/robot/aka-rk3588
-Feetech 总线：/dev/ttyACM0
-机械臂电机：1-6
-底盘电机：7-9
-默认模型：models/tennis.rknn
-校准文件：config/lekiwi_calibration.json
-抓取配置：config/lekiwi_pick_config.txt
+UVC摄像头采集
+→ RKNN YOLOv8识别网球
+→ 三轮底盘追球、对正和停车
+→ 六自由度机械臂抓球
+→ 判断是否夹球成功并自动重试
+→ HSV识别红桶、靠近并停车
+→ 机械臂安全接近、放球和撤离
+→ 继续寻找下一颗球
 ```
 
-## 2. 代码结构
+Linux 和 StarryOS 使用同一个 AArch64 用户态程序和同一个物理 rootfs。Feetech 总线
+参数统一使用 `auto`：Linux 通常回退到 `/dev/ttyACM0`，StarryOS 使用 userspace
+libusb CDC。
 
-主要文件：
+硬件编号：
+
+| ID | 部件 | ID | 部件 |
+| --- | --- | --- | --- |
+| 1 | 肩部水平旋转 | 6 | 夹爪 |
+| 2 | 肩部抬升 | 7 | 左轮 |
+| 3 | 肘部弯曲 | 8 | 后轮 |
+| 4 | 腕部俯仰 | 9 | 右轮 |
+| 5 | 腕部旋转 | | |
+
+关键文件：
 
 ```text
-tennis.cpp
+build/tennis                         主程序
+models/tennis.rknn                   网球检测模型
+config/lekiwi_calibration.json       ID1～ID6机械臂校准
+config/lekiwi_pick_config.txt        抓球、收球、放球和视觉停车参数
+run_lekiwi_full.sh                   完整捡球闭环
+run_bucket_place_demo.sh             找桶和放球单次演示
+run_lekiwi_test.sh                   架空追球安全测试
+run_vision_once.sh                   单帧视觉测试
 ```
 
-主状态机。负责初始化平台、读取图像、调用检测、切换追球/抓球/找桶/放球状态。
+## 2. 运行前检查
 
-```text
-detect/
-3rd/yolov8_src/
-```
+1. 确认电池电量、USB线、舵机总线和摄像头连接可靠。
+2. 确认机械臂线束不会被关节夹住。
+3. 第一次运行新参数时取出夹爪内的球，并让三个轮子离地。
+4. 保证机器人、机械臂和桶周围没有人手或障碍物。
+5. 随时准备按 `Ctrl-C`；异常时先停车，再关闭机械臂扭矩。
 
-RKNN YOLOv8 检测相关代码。
-
-```text
-capture/uvc_capture.*
-```
-
-UVC 摄像头采集。
-
-```text
-feetech/feetech_bus.*
-```
-
-Feetech STS3215 总线通信。
-
-```text
-robot/omni_base.*
-```
-
-三轮 LeKiwi 底盘控制。
-
-```text
-robot/feetech_arm.*
-```
-
-机械臂关节映射、校准使用、姿态写入。
-
-```text
-robot/lekiwi_task_controller.*
-```
-
-当前 LeKiwi 闭环控制核心，包括追球视觉伺服、找桶视觉伺服、机械臂 IK 抓取和放球动作。
-
-```text
-test_cmds.cpp
-```
-
-调试命令入口，包括视觉、桶检测、Feetech 总线、底盘、机械臂测试。
-
-## 3. 模型和配置
-
-模型放在：
-
-```text
-models/tennis.rknn
-```
-
-`run_lekiwi_loop.sh` 和 `run_vision_once.sh` 默认都会使用该模型。
-
-抓取配置放在：
-
-```text
-config/lekiwi_pick_config.txt
-```
-
-修改抓取配置后通常不需要重新编译，只需要重新运行命令。
-
-机械臂校准文件放在：
-
-```text
-config/lekiwi_calibration.json
-```
-
-没有有效校准文件时，机械臂和完整闭环会拒绝运行。
-
-## 4. 编译
-
-在 Orange Pi 上：
+在工程目录执行只读检查：
 
 ```bash
 cd /home/orangepi/robot/aka-rk3588
-PKG_CONFIG_PATH=/home/orangepi/miniforge3/envs/rknn/lib/pkgconfig \
-LD_LIBRARY_PATH=/home/orangepi/miniforge3/envs/rknn/lib:$LD_LIBRARY_PATH \
-./build_rk3588.sh -b Release -l INFO
+./build/tennis test-new-arm auto config-check
+./build/tennis test-feetech auto scan
+./build/tennis test-feetech auto read
+./build/tennis test-new-arm auto calib-check
 ```
 
-常用脚本会自动编译，因此日常完整运行可以直接执行 `./run_lekiwi_loop.sh`。
-
-## 5. 推荐测试顺序
-
-第一次上电、换线、换模型或调机械结构后，按下面顺序测试。
-
-机械臂配置时会先在扭矩关闭状态读取各关节当前位置，把当前位置写成目标后才使能
-扭矩，因此不会追逐舵机中残留的旧目标。随后回待机姿态的速度限制为约15度/秒；
-`pos`、预设姿态和完整捡球程序的首次回位也使用同一慢速路径。
-完整程序启动时如果ID6反馈大于25°，视为夹爪可能仍有上次中断时留下的球：程序先
-保持机械臂不动，将夹爪慢速完全张开到100°，再慢速回HOME并从追球流程重新开始。
-
-### 5.1 检查 Feetech 总线
-
-```bash
-cd /home/orangepi/robot/aka-rk3588
-./build/tennis test-feetech /dev/ttyACM0 scan
-./build/tennis test-feetech /dev/ttyACM0 read
-```
-
-期望结果：
+正常结果包括：
 
 ```text
+config ok: pick/place trajectories are inside configured safety limits
 found 9 motor(s): 1 2 3 4 5 6 7 8 9
-```
-
-如果缺少某个 ID，先检查电源、舵机线、总线连接和 ID 配置。
-
-### 5.2 检查机械臂校准
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 calib-check
-```
-
-期望结果：
-
-```text
 calibration ok
 ```
 
-如果校准不存在或失效，执行：
+`config-check` 不会让机械臂动作。`scan`、`read` 只通信，不发送姿态命令。
 
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 calibrate
-```
+## 3. 三种运行方式
 
-校准时按提示把每个机械臂关节移动到安全两端，程序会记录端点并计算中间映射。
+### 3.1 单帧视觉测试
 
-### 5.3 检查机械臂初始姿态
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 pos
-```
-
-如果夹爪里夹着球、机械臂卡住或关节受力，可能会出现 Feetech 错误，例如 6 号夹爪电机返回错误。此时先取下球，确认机械结构没有受力，再重试。
-
-### 5.4 检查视觉模型
+不初始化底盘和机械臂：
 
 ```bash
 ./run_vision_once.sh
 ```
 
-Linux 下脚本会先编译再运行；Starry 下会直接运行已经部署的 `build/tennis`，因此
-需要先在 Linux 下完成编译和根文件系统同步。脚本默认使用 NPU core 0。
-
-输出：
+正常结束后生成：
 
 ```text
 capture.jpg
 result.jpg
 ```
 
-`capture.jpg` 是原图，`result.jpg` 是检测结果。
-
-### 5.5 检查桶识别
+### 3.2 找桶和放球演示
 
 ```bash
-./build/tennis test-bucket 0
+./run_bucket_place_demo.sh
 ```
 
-当前桶检测不是模型检测，而是 HSV 红色区域检测。需要放一个明显的红色桶、红色盒子，或者在桶外贴大面积红色纸。
+只执行一次：
 
-## 6. 完整闭环运行
+```text
+保留当前夹爪位置
+→ 平滑进入CARRY
+→ FIND_BUCKET
+→ 靠近桶并按bucket_stop_size_px停车
+→ 固定PLACE_APPROACH
+→ 配置指定的PLACE_RELEASE
+→ 打开夹爪
+→ 原路撤离并退出
+```
+
+该模式不找球、不抓球。夹爪内有球时会实际释放；首次应空载确认停车距离和动作轨迹。
+
+### 3.3 完整闭环
 
 ```bash
-cd /home/orangepi/robot/aka-rk3588
-./run_lekiwi_loop.sh
+./run_lekiwi_full.sh
 ```
 
-等价命令：
+完整程序会持续寻找下一颗球，直到按 `Ctrl-C` 或发生不可恢复错误。
+
+安全追球测试使用：
 
 ```bash
-./build/tennis models/tennis.rknn /dev/ttyACM0 0 /dev/ttyACM0 lekiwi
+./run_lekiwi_test.sh
 ```
 
-运行流程：
+它在确认追球/停车逻辑后退出，不进入抓球和找桶阶段。
+
+## 4. 当前状态机
+
+主要状态：
 
 ```text
 CHASE_BALL
--> PICK_BALL
--> FIND_BUCKET
--> PUT_BALL
--> CHASE_BALL
+→ PICK_BALL
+→ FIND_BUCKET
+→ PUT_BALL
+→ CHASE_BALL
 ```
 
-关键日志：
+### 4.1 追球与停车
+
+程序选择最合适的网球检测框，先完成大方向旋转，再进行细调。只有球框尺寸和球心
+偏差连续满足要求，才进入抓球。距离过近时会后退，不会在误差范围外强行抓取。
+
+### 4.2 抓球
 
 ```text
-LEKIWI_CHASE label=BALL_FORWARD
+HOME
+→ 打开夹爪
+→ PRE_GRAB安全接近
+→ GRAB最终夹球姿态
+→ 闭合夹爪并检测接触
+→ CLEAR沿原路径抬升
+→ CARRY平滑收臂
 ```
 
-正在追球前进。
+ID6出现单独的 `0x20` 过载时，仅在夹爪闭合、持球和释放场景中作为接触信号；其他
+舵机错误仍会停车。抓球完成后结合夹爪位置和视觉复核判断是否真正夹住球。失败时会
+尝试小范围前后/高度偏移，成功的偏移可能写回配置文件。
+
+### 4.3 小车持球移动
+
+只有机械臂完成 CARRY 并稳定后才允许车轮启动。当前 `carry_id1_deg=-11.3`，因此
+收球时肩部水平关节会略向左转；这不是机械臂跟踪桶，而是记录的持球姿态。
+
+### 4.4 找桶与停车
+
+桶使用全分辨率图像进行 HSV 检测。程序以桶框宽、高中的较小值作为距离指标：达到
+`bucket_stop_size_px` 后停车；接近目标的最后10%自动降速；明显过近时后退。
+
+### 4.5 放球
+
+接近姿态与最终放球姿态完全独立：
 
 ```text
-LEKIWI_CHASE label=BALL_FINE_LEFT / BALL_FINE_RIGHT
+固定PLACE_APPROACH：高位、收回、越过桶沿
+配置PLACE_RELEASE：严格使用place_id1_deg～place_id5_deg
 ```
 
-球中心偏左或偏右，正在小角度对准。
+两者之间使用五次 S 曲线平滑插值。最终姿态不会通过 IK 重新计算，也不会反向改变
+接近姿态。程序检查所有关节角度、中间轨迹以及最终姿态确实低于接近姿态。
 
-```text
-LEKIWI_CHASE label=BALL_READY ready=1
-```
+## 5. 当前稳定配置
 
-球的位置和距离稳定，准备抓取。
-
-```text
-[GAME] -> PICK_BALL
-[GAME] PICK_BALL done gripper=45.4 gripper_hold=yes ball_visible=no area=0.000 off=0 size=0 label=IDLE holding=yes
-```
-
-抓取完成，夹爪反馈像是夹住，且抓取后视觉里不再看到球，因此判断夹住。
-
-```text
-[GAME] -> FIND_BUCKET
-[GAME] LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH L=12 R=-12
-```
-
-开始找桶。视野内没有红色桶时，会旋转搜索。
-
-```text
-[GAME] -> PUT_BALL
-[GAME] PUT_BALL done -> CHASE_BALL
-```
-
-桶到位，完成放球并回到追球。
-
-## 7. 追球设计
-
-当前追球不是用真实距离，而是用图像中的目标框尺寸和中心偏差。
-
-核心配置在：
+参数文件：
 
 ```text
 config/lekiwi_pick_config.txt
 ```
 
-相关参数：
+修改后退出旧进程并重新运行即可生效，不需要重新编译。角度均为校准后的度数，不是
+舵机 `0～4095` 原始值。
 
-```text
-ball_stop_size_px = 155
-ball_stop_tolerance_px = 5
-ball_center_tolerance_px = 30
-ball_stable_frames = 2
-```
-
-`ball_stop_size_px` 是球检测框宽、高中的较大值。增大表示机器人更靠近球才停车，
-减小表示更远停车。`ball_stop_tolerance_px` 是上下容差，所以当前距离合格范围是
-`155±5`，即 `150～160` 像素。容差越大越容易停车，但前后位置差异也越大。
-
-`ball_center_tolerance_px` 是球心与画面目标中心允许的左右误差；当前必须在
-`±30` 像素内。`ball_stable_frames` 表示距离和球心条件必须连续满足多少个检测帧；
-Starry约2.3fps时，2帧约需0.9秒。
-
-## 8. 抓取设计
-
-当前抓取是逆运动学与关键姿态的混合控制：接近和夹球使用已经验证的二维 IK，收臂
-使用实机记录的 CARRY 关节姿态。
-
-抓取动作大致为：
-
-```text
-移动到 home
-进入记录的ID1～ID5夹球基础姿态方向
-打开夹爪
-自动计算安全接近点
-按前后/左右/上下偏移到达夹球位置
-关闭夹爪
-沿原路径抬离地面（CLEAR）
-使用五次S曲线进入记录的carry姿态
-保持 carry 约0.5秒并确认关节反馈稳定
-允许启动车轮
-```
-
-抓取完成后同时使用夹爪反馈和抓取后视觉复核：
-
-```text
-gripper_hold = arm_gripper > 25
-ball_visible = 抓取后这一帧仍能检测到球
-holding      = gripper_hold && !ball_visible
-```
-
-夹爪闭合时如果位置连续约300毫秒不再变化、同时仍有明显闭合残差，程序会认为已经
-接触球并保持当前角度，不再继续挤压到完全闭合。ID6单独报告的`0x20`过载也只在该
-接触/释放流程中作为夹爪状态处理；其他舵机过载及其他错误仍会立即停车。最终是否
-夹球成功仍使用上面的夹爪位置和视觉共同确认。
-
-如果没有夹住，程序不会直接去找桶。如果球仍在视野内且仍是 `BALL_READY`，会立即使用下一组小偏移再次抓取；如果球仍在视野内但不再到位，会回到追球状态重新视觉对准。
-
-当前抓取参数：
+当前从开发板同步的稳定参数：
 
 ```text
 grab_id1_deg = -18.0
@@ -337,279 +205,166 @@ grab_id2_deg = 37.7
 grab_id3_deg = 20.0
 grab_id4_deg = 40.0
 grab_id5_deg = 0.0
-grab_forward_offset_cm = -1.5
-grab_lateral_offset_cm = 0.0
+grab_forward_offset_cm = -0.5
+grab_lateral_offset_cm = -0.5
 grab_height_offset_cm = -1.0
 grab_pitch_offset_deg = 0.0
+
 carry_id1_deg = -11.3
 carry_id2_deg = -18.3
 carry_id3_deg = -45.0
 carry_id4_deg = 51.8
 carry_id5_deg = 0.1
-place_id1_deg = 0.0
-place_id2_deg = 10.4
-place_id3_deg = -55.7
-place_id4_deg = 80.0
+
+place_id1_deg = -11.3
+place_id2_deg = 20.4
+place_id3_deg = -25.7
+place_id4_deg = 70.0
 place_id5_deg = 0.0
-bucket_stop_size_px = 325
+
+bucket_stop_size_px = 360
+gripper_open_delta_deg = 60.0
+gripper_close_delta_deg = -60.0
 carry_duration_ms = 2000
 carry_settle_ms = 500
 arm_speed_scale = 0.5
+
+ball_stop_size_px = 155
+ball_stop_tolerance_px = 5
+ball_center_tolerance_px = 30
+ball_stable_frames = 2
 ```
 
-ID1～ID5依次对应肩部水平、肩部抬升、肘部、腕部俯仰和腕部旋转。ID6夹爪不记录
-在三组姿态中，继续使用原有开合量。
+## 6. 参数含义和调整顺序
 
-## 9. 抓取调参
+### 6.1 夹球基础姿态
 
-调参文件：
+`grab_id1_deg～grab_id5_deg` 是夹爪闭合瞬间的基础姿态。通常先保持不变，使用四个
+偏移修正现场误差：
 
-```text
-config/lekiwi_pick_config.txt
-```
+| 现象 | 调整 |
+| --- | --- |
+| 夹爪伸过球 | 减小 `grab_forward_offset_cm` |
+| 夹爪够不到球 | 增大 `grab_forward_offset_cm` |
+| 夹爪在球左边 | 减小 `grab_lateral_offset_cm` |
+| 夹爪在球右边 | 增大 `grab_lateral_offset_cm` |
+| 夹爪太低 | 增大 `grab_height_offset_cm` |
+| 夹爪太高 | 减小 `grab_height_offset_cm` |
+| 夹爪俯仰不合适 | 每次调整 `grab_pitch_offset_deg` 约5度 |
 
-修改后重新运行命令即可。
+位置单位为厘米，每次只改 `0.5`，并且一次只改一个方向。
 
-推荐先只测机械臂：
+### 6.2 CARRY姿态
+
+`carry_id1_deg～carry_id5_deg` 是夹球成功、车轮启动前的机械臂姿态。
+
+- 小车移动时机械臂偏左：检查 `carry_id1_deg`。
+- 收臂太慢或太快：调整 `carry_duration_ms`。
+- 到位后仍晃动：适当增加 `carry_settle_ms`。
+
+### 6.3 最终放球姿态
+
+`place_id1_deg～place_id5_deg` 是最终严格执行的关节角度。ID2、ID3共同决定伸展和
+高度，ID4决定夹爪俯仰。它们不影响固定的接近姿态。
+
+调整顺序：
+
+1. 先用 `bucket_stop_size_px` 调整小车与桶的距离，每次改10～20。
+2. 使用 `task place-approach` 确认固定接近姿态能越过桶沿。
+3. 小角度调整 ID2、ID3，使用 `task place-release` 检查最终位置。
+4. 调整 ID4，使夹爪以合适角度释放。
+5. 最后运行 `task place-cycle` 或桶演示。
+
+ID3变得更负不一定让夹爪更低；机械臂是二连杆结构，必须以实际位置和
+`config-check` 为准。
+
+### 6.4 桶停车距离
+
+`bucket_stop_size_px` 使用桶框较短边：
+
+- 增大：小车更靠近桶才停车。
+- 减小：小车离桶更远就停车。
+
+不同尺寸的桶需要重新确认该值。机械臂前后位置误差较大时优先调整停车距离，不要
+首先改变放球姿态。
+
+### 6.5 网球停车参数
+
+| 参数 | 含义 |
+| --- | --- |
+| `ball_stop_size_px` | 球框宽、高较大值的目标尺寸；增大表示更靠近球 |
+| `ball_stop_tolerance_px` | 目标尺寸允许误差；当前 `155±5` |
+| `ball_center_tolerance_px` | 球心与画面目标中心允许的左右误差 |
+| `ball_stable_frames` | 距离和左右条件连续满足多少帧才抓球 |
+
+## 7. 机械臂分阶段命令
+
+以下命令会产生实际动作，只有 `config-check` 例外：
 
 ```bash
-./build/tennis test-new-arm /dev/ttyACM0 ik-pick
+./build/tennis test-new-arm auto config-check       # 不动作
+./build/tennis test-new-arm auto task home          # 回HOME
+./build/tennis test-new-arm auto task carry         # 到CARRY
+./build/tennis test-new-arm auto task place-approach # 固定接近姿态
+./build/tennis test-new-arm auto task place-release  # 接近后到最终姿态，不开夹爪
+./build/tennis test-new-arm auto task place-cycle    # 完整放球，会打开夹爪
+./build/tennis test-new-arm auto ik-pick             # 完整机械臂抓球
+./build/tennis test-new-arm auto ik-put              # 完整机械臂放球
 ```
 
-放球采用独立的安全姿态和 S 曲线。首次调整时不要直接运行完整程序，按顺序测试：
+这些动作从舵机实际位置开始，不会为了演示而先强制回 HOME。重复执行同一目标时可能
+几乎看不到动作，这是正常的幂等行为。
+
+## 8. 日志判断
+
+正常完成：
+
+```text
+done=1 failed=0
+```
+
+常见状态：
+
+| 日志 | 含义 |
+| --- | --- |
+| `BALL_FORWARD/BACKWARD` | 根据球框尺寸前进或后退 |
+| `BALL_READY` | 球距离和左右位置满足要求 |
+| `BUCKET_FORWARD/BACKWARD` | 调整与桶的距离 |
+| `BUCKET_READY ... target=360` | 达到桶停车阈值 |
+| `place_approach` | 固定安全接近姿态 |
+| `place_release` | 配置指定的最终放球姿态 |
+| `gripper contact` | 夹爪过载或稳定残差判断为接触球 |
+
+上层某些日志仍使用 `communication failure`，但后面的具体原因可能是配置或轨迹安全
+校验失败，应以冒号后的错误为准。
+
+## 9. 安全和异常处理
+
+- 程序启动和 HOME 使用25度/秒限速；普通动作受 `arm_speed_scale` 控制。
+- 放球下降、释放和撤离使用不同的低速 S 曲线。
+- 配置越界、最终放球点没有低于接近点、轨迹扫出安全走廊时会在动作前拒绝。
+- CLEAR负载过大且达不到安全高度时，程序保持底盘停止，释放球并恢复 HOME。
+- `Ctrl-C` 后应确认轮子停止；需要手动移动机械臂时执行：
 
 ```bash
-./build/tennis test-new-arm auto config-check
-./build/tennis test-new-arm auto task carry
-./build/tennis test-new-arm auto task place-approach
-./build/tennis test-new-arm auto task place-release
-./build/tennis test-new-arm auto task place-cycle
+./build/tennis test-base auto stop
+./build/tennis test-feetech auto torque-off
 ```
 
-分阶段姿态确认后，可以用一条命令演示完整桶流程：
+底层 USB、编译、rootfs、StarryOS 或校准故障见调试手册。
 
-```bash
-./run_bucket_place_demo.sh
-```
-
-该命令从 `FIND_BUCKET` 开始，依次完成视觉找桶、靠近、按 `bucket_stop_size_px` 停车、
-安全接近、下降、打开夹爪、撤离，并在一次循环完成后自动退出。它不会找球或抓球；
-启动时保留夹爪当前位置并平滑进入 CARRY。首次应取出夹爪内的球进行空载测试。
-
-`place-approach` 只到桶口上方的高位收回点；`place-release` 再平滑向前、向下进入
-放球姿态，但不会打开夹爪。两者都安全后才运行 `place-cycle`。完整顺序是：收球姿态
-→ 高位收回点 → 向前下降到放球姿态 → 打开夹爪 → 原路撤离 → 收球姿态。
-
-高位接近姿态固定为已验证角度，不随放球配置变化。`place_id2_deg`、`place_id3_deg`、
-`place_id4_deg` 是最终放球时严格执行的关节角度，不再通过前后或高度偏移重新计算。
-
-调整规则如下：
+## 10. 推荐现场调试流程
 
 ```text
-小车离桶太远：增大 bucket_stop_size_px
-小车离桶太近：减小 bucket_stop_size_px
-最终伸展和高度：直接调整 place_id2_deg、place_id3_deg
-最终夹爪俯仰：直接调整 place_id4_deg
-整体速度：arm_speed_scale（0.3首次调试，0.5稳定运行）
+1. config-check、scan、read、calib-check
+2. 空载测试HOME和CARRY
+3. 单独运行ik-pick固定球和车的位置
+4. 架空运行run_lekiwi_test.sh
+5. 空载分阶段测试place-approach和place-release
+6. 空载运行run_bucket_place_demo.sh
+7. 有球运行桶演示
+8. 最后运行run_lekiwi_full.sh
 ```
 
-优先以 `10～20px` 为步长调整停车距离，再以小角度修改 ID2、ID3、ID4。修改后先
-运行 `config-check`。如果最终关节角度或从固定接近姿态到放球姿态的路径越界，校验
-会拒绝动作。安全接近姿态和到位等待由程序内部管理，不再作为现场参数。HOME 和
-程序启动回位独立限制为25°/s，不受 `arm_speed_scale` 影响。
-
-现场调参规则：
-
-```text
-夹爪伸过球：减小 grab_forward_offset_cm
-夹爪够不到球：增大 grab_forward_offset_cm
-夹爪偏左：减小 grab_lateral_offset_cm
-夹爪偏右：增大 grab_lateral_offset_cm
-夹爪太低：增大 grab_height_offset_cm
-夹爪太高：减小 grab_height_offset_cm
-```
-
-三个位置偏移的单位都是厘米，建议每次调整 `0.5`。例如夹爪伸过球约1厘米：
-
-```text
-grab_forward_offset_cm = -1.0
-```
-
-例如夹爪比球低约0.5厘米：
-
-```text
-grab_height_offset_cm = 0.5
-```
-
-夹球腕部角度调节：
-
-```text
-grab_pitch_offset_deg = 0
-```
-
-如果夹爪闭合时不是尽量垂直向下，而是明显前倾或后仰，每次改 5 观察：
-
-```text
-grab_pitch_offset_deg = -5
-grab_pitch_offset_deg = 5
-```
-
-偏移为0时使用 `grab_id1_deg`～`grab_id5_deg` 记录的最终夹球姿态。程序会自动把前后
-和高度偏移换算为ID2、ID3角度，把左右偏移换算为ID1角度；最终ID4直接使用
-`grab_id4_deg + grab_pitch_offset_deg`。接近点的ID4由程序限制在安全范围内，再用
-五次S曲线平滑过渡到最终ID4，不再强制整段轨迹保持固定总俯仰角。
-
-## 10. 自动重试
-
-抓取失败后，程序会根据抓取后视觉状态选择立即重试或重新追球，并使用下一组偏移：
-
-```text
-(0, 0)
-(-0.5, 0)
-(-1.0, 0)
-(-1.5, 0)
-(-2.0, 0)
-(+1.0, 0)
-(0, -1.0)
-(0, +1.0)
-(-1.5, -1.0)
-(-1.5, +1.0)
-```
-
-第一个值加到 `grab_forward_offset_cm`，第二个值加到 `grab_height_offset_cm`，单位
-均为厘米。某次成功后只保存偏移，不修改两组基础关节姿态。
-
-如果某次偏移成功，程序会保存成功参数到：
-
-```text
-config/lekiwi_pick_config.txt
-```
-
-## 11. 桶识别和放球
-
-当前桶检测是红色 HSV 检测，不是神经网络模型。
-
-需要准备：
-
-```text
-亮红色塑料桶
-红色收纳盒
-外侧贴大面积红色纸的桶
-```
-
-不推荐：
-
-```text
-暗红、棕红、橙红
-反光很强的红色金属桶
-红色区域很碎的小物体
-背景中有更大的红色物体
-```
-
-视野里没有桶时，正常行为是旋转搜索：
-
-```text
-LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH L=12 R=-12
-```
-
-看见桶后，会根据桶中心和尺寸靠近。到位后进入放球动作。
-
-## 12. 安全操作
-
-关闭所有 Feetech 电机扭矩：
-
-```bash
-./build/tennis test-feetech /dev/ttyACM0 torque-off
-```
-
-机械臂动作异常、卡住、夹爪里有球导致启动失败时，先取下球或解除受力，再执行：
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 pos
-```
-
-如果完整闭环正在运行，按 `Ctrl-C` 停止。程序会尝试让底盘停止并关闭摄像头。
-
-## 13. 常见问题
-
-### 13.1 Failed to configure Feetech arm
-
-先执行：
-
-```bash
-./build/tennis test-feetech /dev/ttyACM0 scan
-./build/tennis test-feetech /dev/ttyACM0 read
-./build/tennis test-new-arm /dev/ttyACM0 pos
-```
-
-如果错误指向 6 号夹爪电机，并且夹爪里有球或夹爪受力，先取下球再试。
-
-### 13.2 一直追球不抓
-
-看日志中的 `size` 和 `off`：
-
-```text
-size 在 140～170之间（155±15）
-off 绝对值不超过30
-上述条件连续满足2个检测帧
-```
-
-如果球框尺寸总在当前窗口外来回跳，可以小幅增大 `ball_stop_tolerance_px`；如果停车
-位置前后误差太大，则应减小该值。每次建议只改2～3像素。
-
-### 13.3 抓住球后不找桶
-
-正常应看到：
-
-```text
--> FIND_BUCKET
-LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH
-```
-
-如果没有红色桶，它会旋转搜索，不会放球。
-
-### 13.4 桶不识别
-
-先运行：
-
-```bash
-./build/tennis test-bucket 0
-```
-
-确保画面里有大面积亮红色区域。桶不是红色、太暗、太小或背景有红色干扰，都会影响识别。
-
-### 13.5 机械臂方向明显不对
-
-优先检查校准：
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 calib-check
-```
-
-必要时重新校准：
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 calibrate
-```
-
-不要优先用原始姿态文件掩盖校准问题。
-
-## 14. 本地和开发板同步
-
-本地同步到 Orange Pi：
-
-```bash
-./scripts/sync_to_orangepi.sh
-```
-
-从 Desktop-Wanderer 拉取模型到本工程默认位置：
-
-```bash
-./scripts/sync_from_orangepi.sh
-```
-
-同步后默认模型仍应位于：
-
-```text
-models/tennis.rknn
-```
+每次只修改一组参数并记录提交、系统、参数、日志和视频。完整闭环自动写回抓球成功
+偏移后，应将开发板的稳定配置同步回仓库。

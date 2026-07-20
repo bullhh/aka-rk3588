@@ -16,8 +16,8 @@ struct LeKiwiPickConfig {
     float grab_id3_deg = 20.0f;
     float grab_id4_deg = 40.0f;
     float grab_id5_deg = 0.0f;
-    float grab_forward_offset_cm = -1.5f;
-    float grab_lateral_offset_cm = 0.0f;
+    float grab_forward_offset_cm = -0.5f;
+    float grab_lateral_offset_cm = -0.5f;
     float grab_height_offset_cm = -1.0f;
     float grab_pitch_offset_deg = 0.0f;
     float carry_id1_deg = -11.3f;
@@ -27,12 +27,12 @@ struct LeKiwiPickConfig {
     float carry_id5_deg = 0.1f;
     // Exact recorded release pose above the bucket. The safe approach pose is
     // fixed internally and is independent of these final joint angles.
-    float place_id1_deg = 0.0f;
-    float place_id2_deg = 10.4f;
-    float place_id3_deg = -55.7f;
-    float place_id4_deg = 80.0f;
+    float place_id1_deg = -11.3f;
+    float place_id2_deg = 20.4f;
+    float place_id3_deg = -25.7f;
+    float place_id4_deg = 70.0f;
     float place_id5_deg = 0.0f;
-    int bucket_stop_size_px = 325;
+    int bucket_stop_size_px = 360;
     float arm_speed_scale = 0.5f;
     float gripper_open_delta_deg = 60.0f;
     float gripper_close_delta_deg = -60.0f;
