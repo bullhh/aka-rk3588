@@ -182,7 +182,9 @@ config/lekiwi_pick_config.txt
 
 `place_id1_deg`～`place_id5_deg` 是精确的桶内最终释放姿态；其中 ID2、ID3、ID4
 可直接按实机需要设置，不再经过 IK 偏移换算，也不会影响固定的高位接近姿态。
-前后距离优先通过 `bucket_stop_size_px` 调整。`arm_speed_scale=0.5` 是稳定运行速度；
+前后距离优先通过 `bucket_stop_size_px` 调整；桶中心精调使用
+`bucket_center_tolerance_px`，距离和中心连续满足 `bucket_stable_frames` 帧后才放球。
+`arm_speed_scale=0.5` 是稳定运行速度；
 程序启动及 HOME 返回使用独立的 25°/s 限速。
 
 常用调参规则：

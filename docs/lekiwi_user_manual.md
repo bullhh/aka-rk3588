@@ -171,8 +171,10 @@ ID6出现单独的 `0x20` 过载时，仅在夹爪闭合、持球和释放场景
 
 ### 4.4 找桶与停车
 
-桶使用全分辨率图像进行 HSV 检测。程序以桶框宽、高中的较小值作为距离指标：达到
-`bucket_stop_size_px` 后停车；接近目标的最后10%自动降速；明显过近时后退。
+桶使用全分辨率图像进行 HSV 检测。程序先快速转向，再以低速将桶中心精调到
+`bucket_center_tolerance_px` 范围内；未对正时禁止前进。程序以桶框宽、高中的较小值
+作为距离指标：达到 `bucket_stop_size_px` 后停车；接近目标的最后10%自动降速；明显
+过近时后退。距离和中心连续满足 `bucket_stable_frames` 帧后才进入放球。
 
 ### 4.5 放球
 
@@ -223,6 +225,8 @@ place_id4_deg = 70.0
 place_id5_deg = 0.0
 
 bucket_stop_size_px = 360
+bucket_center_tolerance_px = 20
+bucket_stable_frames = 3
 gripper_open_delta_deg = 60.0
 gripper_close_delta_deg = -60.0
 carry_duration_ms = 2000
@@ -278,7 +282,7 @@ ball_stable_frames = 2
 ID3变得更负不一定让夹爪更低；机械臂是二连杆结构，必须以实际位置和
 `config-check` 为准。
 
-### 6.4 桶停车距离
+### 6.4 桶停车和对齐
 
 `bucket_stop_size_px` 使用桶框较短边：
 
@@ -287,6 +291,10 @@ ID3变得更负不一定让夹爪更低；机械臂是二连杆结构，必须�
 
 不同尺寸的桶需要重新确认该值。机械臂前后位置误差较大时优先调整停车距离，不要
 首先改变放球姿态。
+
+`bucket_center_tolerance_px` 是桶中心与画面中心允许的左右偏差：减小会对得更正，
+但过小会因检测抖动反复旋转。`bucket_stable_frames` 是距离和中心同时满足要求的连续
+帧数。当前推荐值为 `±20 px`、连续3帧。
 
 ### 6.5 网球停车参数
 
@@ -330,7 +338,8 @@ done=1 failed=0
 | `BALL_FORWARD/BACKWARD` | 根据球框尺寸前进或后退 |
 | `BALL_READY` | 球距离和左右位置满足要求 |
 | `BUCKET_FORWARD/BACKWARD` | 调整与桶的距离 |
-| `BUCKET_READY ... target=360` | 达到桶停车阈值 |
+| `BUCKET_FINE_LEFT/RIGHT` | 停止前进，以低速精细对正桶中心 |
+| `BUCKET_READY ... off=... tol=20 target=360` | 距离和中心满足要求 |
 | `place_approach` | 固定安全接近姿态 |
 | `place_release` | 配置指定的最终放球姿态 |
 | `gripper contact` | 夹爪过载或稳定残差判断为接触球 |

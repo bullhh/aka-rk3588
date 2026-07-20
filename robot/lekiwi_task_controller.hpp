@@ -33,6 +33,8 @@ struct LeKiwiPickConfig {
     float place_id4_deg = 70.0f;
     float place_id5_deg = 0.0f;
     int bucket_stop_size_px = 360;
+    int bucket_center_tolerance_px = 20;
+    int bucket_stable_frames = 3;
     float arm_speed_scale = 0.5f;
     float gripper_open_delta_deg = 60.0f;
     float gripper_close_delta_deg = -60.0f;
@@ -80,6 +82,10 @@ public:
     int target_right() const { return right_; }
     int target_position() const { return target_position_; }
     int bucket_target_position() const { return bucket_target_position_; }
+    int target_center() const { return target_cx_; }
+    int bucket_center_tolerance() const {
+        return config_.bucket_center_tolerance_px;
+    }
 
 private:
     struct TargetBox {

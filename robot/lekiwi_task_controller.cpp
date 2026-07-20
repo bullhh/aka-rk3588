@@ -369,6 +369,10 @@ bool LeKiwiPickConfig::load(const std::string& path) {
         else if (key == "place_id5_deg") place_id5_deg = v;
         else if (key == "bucket_stop_size_px")
             bucket_stop_size_px = std::max(1, (int)v);
+        else if (key == "bucket_center_tolerance_px")
+            bucket_center_tolerance_px = std::max(1, (int)v);
+        else if (key == "bucket_stable_frames")
+            bucket_stable_frames = std::max(1, (int)v);
         else if (key == "arm_speed_scale")
             arm_speed_scale = std::max(0.1f, std::min(1.0f, v));
         else if (key == "gripper_open_delta_deg") gripper_open_delta_deg = v;
@@ -462,7 +466,11 @@ bool LeKiwiPickConfig::save(const std::string& path) const {
     ofs << "place_id4_deg = " << place_id4_deg << "\n";
     ofs << "place_id5_deg = " << place_id5_deg << "\n\n";
     ofs << "# 桶检测框较短边达到该像素值后停车；增大表示更靠近桶。\n";
-    ofs << "bucket_stop_size_px = " << bucket_stop_size_px << "\n\n";
+    ofs << "bucket_stop_size_px = " << bucket_stop_size_px << "\n";
+    ofs << "# 桶中心相对画面中心的允许偏差；超出时停止前进并低速对正。\n";
+    ofs << "bucket_center_tolerance_px = " << bucket_center_tolerance_px << "\n";
+    ofs << "# 距离和中心连续满足多少帧后才开始放球。\n";
+    ofs << "bucket_stable_frames = " << bucket_stable_frames << "\n\n";
     ofs << "# ID6夹爪开合量。保持现有力度时不要修改。\n";
     ofs << "gripper_open_delta_deg = " << gripper_open_delta_deg << "\n";
     ofs << "gripper_close_delta_deg = " << gripper_close_delta_deg << "\n\n";
@@ -491,6 +499,14 @@ bool LeKiwiPickConfig::validate(std::string& error) const {
     error.clear();
     if (bucket_stop_size_px < 50 || bucket_stop_size_px > 470) {
         error = "bucket_stop_size_px must be in [50,470] for a 640x480 frame";
+        return false;
+    }
+    if (bucket_center_tolerance_px < 5 || bucket_center_tolerance_px > 100) {
+        error = "bucket_center_tolerance_px must be in [5,100]";
+        return false;
+    }
+    if (bucket_stable_frames < 1 || bucket_stable_frames > 30) {
+        error = "bucket_stable_frames must be in [1,30]";
         return false;
     }
     const ResolvedGrabTarget grab = resolve_grab_target(*this);
@@ -602,6 +618,19 @@ LeKiwiMoveController::Command LeKiwiMoveController::control_target(const TargetB
         return diff_drive_cmd(bucket ? "BUCKET_RIGHT" : "BALL_RIGHT", spd, -spd);
     }
 
+    if (bucket) {
+        const int center_error = target.cx - target_cx_;
+        if (std::abs(center_error) > config_.bucket_center_tolerance_px) {
+            stable_count_ = 0;
+            constexpr int kFineAlignSpeed = 8;
+            return center_error < 0
+                ? diff_drive_cmd("BUCKET_FINE_LEFT", -kFineAlignSpeed,
+                                 kFineAlignSpeed)
+                : diff_drive_cmd("BUCKET_FINE_RIGHT", kFineAlignSpeed,
+                                 -kFineAlignSpeed);
+        }
+    }
+
     if (!bucket) {
         int center_error = target.cx - target_cx_;
         if (std::abs(center_error) > config_.ball_center_tolerance_px) {
@@ -640,9 +669,8 @@ LeKiwiMoveController::Command LeKiwiMoveController::control_target(const TargetB
 
     stable_count_++;
     Command cmd = diff_drive_cmd(bucket ? "BUCKET_READY" : "BALL_READY", 0, 0);
-    constexpr int kBucketStableFrames = 2;
     cmd.reached = stable_count_ >=
-        (bucket ? kBucketStableFrames : config_.ball_stable_frames);
+        (bucket ? config_.bucket_stable_frames : config_.ball_stable_frames);
     return cmd;
 }
 

@@ -919,8 +919,11 @@ int main(int argc, char** argv)
                 else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
 
                 dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d size=%d/%d target=%d L=%d R=%d stable=%d\n",
-                       bucket_visible ? 1 : 0, cmd.label, br.cx, br.w, br.h,
+                printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d off=%d tol=%d size=%d/%d target=%d L=%d R=%d stable=%d\n",
+                       bucket_visible ? 1 : 0, cmd.label, br.cx,
+                       br.cx - lekiwi_move.target_center(),
+                       lekiwi_move.bucket_center_tolerance(),
+                       br.w, br.h,
                        lekiwi_move.bucket_target_position(),
                        cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
                 dup2(g_devnull, STDERR_FILENO);
