@@ -4,19 +4,6 @@
 功能、状态机、参数含义和现场调参见
 [`lekiwi_user_manual.md`](lekiwi_user_manual.md)。
 
-适用环境：
-
-```text
-本地源码：/home/szy/work/robot/tripod/aka-rk3588
-tgoskits：/home/szy/work/robot/tripod/tgoskits
-共享rootfs：/home/orangepi/robot/aka-rk3588
-板卡服务：10.3.10.60:2999
-板卡类型：OrangePi-5-Plus-robot
-Linux账号：orangepi
-Feetech参数：auto
-```
-
-开发板 IP 由 DHCP 分配，不能把文档或同步脚本中的示例地址当成固定地址。
 
 ## 1. 安全规则
 
@@ -193,6 +180,29 @@ Linux 检查写入目录、时间戳以及是否执行 `sync`。
 
 每次更改控制代码或配置后按顺序执行。前一步失败时不要继续完整动作。
 
+推荐把初始化分成四层，不要直接用完整闭环同时验证所有硬件：
+
+| 层级 | 命令 | 是否动作 | 通过标准 |
+| --- | --- | --- | --- |
+| 配置 | `config-check` | 否 | 参数和规划轨迹在安全范围内 |
+| 通信 | `scan`、`read` | 否 | 连续找到并读取ID1～ID9 |
+| 校准 | `calib-check` | 否 | 校准文件存在、格式和关节完整 |
+| 执行 | `task home`、`task carry` | 是 | 从当前位置限速动作且`done=1 failed=0` |
+
+完整初始化检查命令：
+
+```bash
+cd /home/orangepi/robot/aka-rk3588
+./build/tennis test-new-arm auto config-check
+./build/tennis test-feetech auto scan
+./build/tennis test-feetech auto read
+./build/tennis test-new-arm auto calib-check
+```
+
+第一次上电若只有第一条舵机命令出现一次`rx timeout waiting for header/params`，立即重试
+同一条命令。第二次完整成功通常是USB CDC刚建立后的瞬态；连续两次以上失败才检查供电、
+USB线、总线占用和CDC实现。
+
 ### 6.1 配置静态校验
 
 ```bash
@@ -244,6 +254,19 @@ opened TTY /dev/ttyACM0 baud=1000000
 校准会关闭 ID1～ID6 扭矩并要求手动移动到安全端点，结果写入
 `config/lekiwi_calibration.json`。不要把动作姿态写进校准文件。
 
+首次校准的正确操作：
+
+1. 托住机械臂并清空周围空间，执行`calibrate`后ID1～ID6会关闭扭矩。
+2. 在程序持续显示位置时，分别缓慢转动所有非连续关节到两个安全机械端点；不要撞击
+   限位，也不要依靠舵机通电硬顶端点。
+3. ID5是全转关节，程序使用完整`0～4095`范围，不需要寻找机械端点。
+4. 所有关节范围都记录后按回车，程序以端点中点计算零位并写入JSON。
+5. 校准结束时扭矩仍关闭；先执行`calib-check`，再空载执行`task home`。
+
+以下情况才重新校准：更换舵机、拆装花键导致零位变化、机械端点变化，或者
+`calib-check`明确失败。单纯夹球位置不准时不要校准，应调整
+`config/lekiwi_pick_config.txt`。
+
 ### 6.4 不开夹爪的机械臂测试
 
 ```bash
@@ -255,6 +278,14 @@ opened TTY /dev/ttyACM0 baud=1000000
 
 `place-release` 会先到固定接近姿态，再到配置的最终放球姿态，但不会打开夹爪。命令
 从舵机实际位置起步；目标已经到位时几乎不动作是正常现象。
+
+初始化时正常日志应包含：
+
+```text
+[FeetechArm] torque enabled at current positions; no startup jump
+```
+
+它表示程序先保持上电时的实际角度，再限速执行目标，不会先瞬间跳到预设姿态。
 
 ### 6.5 会开夹爪的机械臂测试
 
@@ -306,12 +337,73 @@ attempt to claim already-claimed interface 1
 ### 6.8 状态机测试
 
 ```bash
+cd /home/orangepi/robot/aka-rk3588
 ./run_lekiwi_test.sh          # 架空追球，确认后退出
 ./run_bucket_place_demo.sh    # 找桶、靠近、放球一次后退出
 ./run_lekiwi_full.sh          # 完整持续闭环
 ```
 
 桶演示和完整闭环会驱动小车，必须现场观察，不应在无法看到障碍物时通过 SSH 盲跑。
+
+### 6.9 夹球准确度调整
+
+夹球误差由“摄像头决定的小车停车位置”和“机械臂相对车体的落点”两部分组成。必须
+分开调试，否则同一次修改可能掩盖另一处误差。
+
+#### 第一步：固定机械臂参数，先调停车位置
+
+架起轮子观察追球日志，随后落地做低速实测。重点记录进入`BALL_READY`前后的：
+
+```text
+size=<球框尺寸> off=<球心左右偏差> ready=<连续稳定结果>
+```
+
+| 现象 | 优先调整 | 修改方向 |
+| --- | --- | --- |
+| 小车停得太远、机械臂够不到 | `ball_stop_size_px` | 增大，每次5～10 |
+| 小车停得太近、机械臂伸过球 | `ball_stop_size_px` | 减小，每次5～10 |
+| 前进时经常越过合适位置再后退 | `ball_stop_tolerance_px` | 适当减小，每次1～2 |
+| 停车后球明显偏左或偏右 | `ball_center_tolerance_px` | 适当减小，每次5 |
+| 偶发一帧满足就开始抓球 | `ball_stable_frames` | 增加1帧 |
+
+不要用增大`tolerance`来掩盖夹不到球；容差越大，停车点的前后离散越大。先让同一位置
+连续停车3～5次基本一致，再调整机械臂。
+
+#### 第二步：固定小车和球，只调机械臂落点
+
+```bash
+./build/tennis test-new-arm auto config-check
+./build/tennis test-new-arm auto ik-pick
+```
+
+`ik-pick`会产生完整抓球动作，应先空载运行，再放置固定网球。调整顺序如下：
+
+| 现象 | 参数 | 修改方向 |
+| --- | --- | --- |
+| 夹爪伸过球 | `grab_forward_offset_cm` | 减小0.5 |
+| 夹爪够不到球 | `grab_forward_offset_cm` | 增大0.5 |
+| 夹爪落在球左侧 | `grab_lateral_offset_cm` | 减小0.5 |
+| 夹爪落在球右侧 | `grab_lateral_offset_cm` | 增大0.5 |
+| 夹爪太低 | `grab_height_offset_cm` | 增大0.5 |
+| 夹爪太高 | `grab_height_offset_cm` | 减小0.5 |
+| 位置正确但夹爪角度倾斜 | `grab_pitch_offset_deg` | 每次正/负5度试一个方向 |
+
+上述偏移仍无法得到自然姿态时，再小角度修改`grab_id1_deg～grab_id5_deg`。一次只改一个
+关节，并在每次修改后先执行`config-check`。ID6夹爪力度由
+`gripper_open_delta_deg/gripper_close_delta_deg`控制，位置调试时保持原值。
+
+#### 第三步：回到完整闭环验证
+
+1. 恢复小车正常落地，以同一球位连续测试至少5次。
+2. 区分“没有到球的位置”和“到位但没有夹紧”：前者调停车/位置，后者检查ID6接触日志。
+3. 抓球失败后程序会尝试小范围前后和高度偏移；成功偏移可能自动写回配置。
+4. 测试结束后对比开发板与仓库配置，只保留多次稳定成功的值。
+
+推荐记录表：
+
+```text
+系统/提交 | size/off | 四项grab偏移 | 是否接触 | 是否CLEAR成功 | 是否进入CARRY
+```
 
 ## 7. 日志定位
 
@@ -356,6 +448,28 @@ pgrep -af tennis
 
 S曲线命令是绝对目标，不会先回 HOME。重复执行同一姿态时可能只调整少量关节。需要
 演示明显动作时先执行 `task home` 或另一个安全姿态，再执行目标命令。
+
+### 7.5 机械臂动作期间摄像头暂停
+
+完整闭环进入抓球或放球时，以下日志是当前正常设计：
+
+```text
+[UvcCapture] paused before PICK_BALL in ... ms
+[UvcCapture] resumed after PICK_BALL in ... ms
+```
+
+机械臂动作是阻塞序列，期间不使用视觉帧；暂停UVC可以避免摄像头与Feetech CDC在共享
+USB路径上竞争。StarryOS暂停/恢复各等待数百毫秒是允许的，恢复使用原设备句柄，不会
+重新枚举或重复20帧预热。判断是否异常应看恢复后能否在1秒内取得新帧并继续状态机。
+
+仅用于对比诊断时可关闭该功能：
+
+```bash
+LEKIWI_PAUSE_UVC_DURING_ARM=0 ./run_lekiwi_full.sh
+```
+
+不要把它作为StarryOS日常运行方式；实测不停流时机械臂控制周期最坏超过200ms，而停流
+后保持在约50ms。
 
 ## 8. 恢复和采集信息
 
