@@ -1014,7 +1014,8 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
 
     auto print_usage = []() {
         printf("Usage:\n");
-        printf("  tennis test-new-arm [dev] calibrate|calib-check|pos|grab|ik-pick|release|release-pos|show|torque-off\n");
+        printf("  tennis test-new-arm [dev] calibrate|calib-check|config-check|pos|grab|ik-pick|ik-put|release|release-pos|show|torque-off\n");
+        printf("  tennis test-new-arm [dev] task home|carry|place-hover|place-release|place-cycle\n");
         printf("  tennis test-new-arm [dev] set <joint_name> <deg>\n");
         printf("  tennis test-new-arm [dev] raw <joint_name> <raw_0_4095>\n");
         printf("  tennis test-new-arm [dev] pose-save <name>\n");
@@ -1029,6 +1030,21 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
 
     if (strcmp(cmd, "calibrate") == 0) {
         return cmd_calibrate_lekiwi_arm(uart_dev);
+    }
+
+    if (strcmp(cmd, "config-check") == 0) {
+        LeKiwiPickConfig config;
+        if (!config.load()) {
+            printf("failed to load config/lekiwi_pick_config.txt\n");
+            return 1;
+        }
+        std::string validation_error;
+        if (!config.validate(validation_error)) {
+            printf("config invalid: %s\n", validation_error.c_str());
+            return 1;
+        }
+        printf("config ok: pick/place trajectories are inside configured safety limits\n");
+        return 0;
     }
 
     feetech::FeetechBus bus(uart_dev, 1000000);
@@ -1114,6 +1130,30 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
         printf("ik-pick done=%d failed=%d gripper=%.1f holding=%s\n",
                ctrl.done() ? 1 : 0, ctrl.failed() ? 1 : 0,
                gripper, holding ? "yes" : "no");
+        ok = ok && ctrl.done() && !ctrl.failed();
+        if (!ok) command_error = ctrl.last_error();
+    }
+    else if (strcmp(cmd, "ik-put") == 0 ||
+             (strcmp(cmd, "task") == 0 && argc >= 5)) {
+        LeKiwiArmController ctrl(arm);
+        ok = strcmp(cmd, "ik-put") == 0
+            ? ctrl.begin_put() : ctrl.begin_stage(argv[4]);
+        int tick = 0;
+        while (ok && !ctrl.done() && !ctrl.failed() && tick < 1200) {
+            ok = ctrl.tick();
+            if ((tick % 10) == 0) {
+                printf("%s step=%zu/%zu %s\n", cmd,
+                       ctrl.step_index() + 1,
+                       ctrl.step_count(),
+                       ctrl.current_step_label());
+                fflush(stdout);
+            }
+            usleep(50000);
+            tick++;
+        }
+        if (ctrl.failed()) ok = false;
+        printf("%s done=%d failed=%d\n", cmd,
+               ctrl.done() ? 1 : 0, ctrl.failed() ? 1 : 0);
         ok = ok && ctrl.done() && !ctrl.failed();
         if (!ok) command_error = ctrl.last_error();
     }

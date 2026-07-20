@@ -309,7 +309,7 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
         return false;
     }
 
-    constexpr float kArmStepDeg = 0.75f;       // 15 deg/s at 20 Hz
+    constexpr float kArmStepDeg = 1.25f;       // 25 deg/s at 20 Hz
     constexpr float kGripperStepDeg = 2.0f;   // gripper may move faster
     constexpr int kPeriodUs = 50000;
     constexpr int kMaxTicks = 500;             // 25 seconds maximum

@@ -332,26 +332,38 @@ holding      = gripper_hold && !ball_visible
 当前抓取参数：
 
 ```text
-grab_id1_deg = -12.0
+grab_id1_deg = -18.0
 grab_id2_deg = 37.7
-grab_id3_deg = 42.1
-grab_id4_deg = 0.2
+grab_id3_deg = 20.0
+grab_id4_deg = 40.0
 grab_id5_deg = 0.0
-grab_forward_offset_cm = 0.0
+grab_forward_offset_cm = -1.0
 grab_lateral_offset_cm = 0.0
-grab_height_offset_cm = 0.0
+grab_height_offset_cm = -1.0
 grab_pitch_offset_deg = 0.0
 carry_id1_deg = -11.3
 carry_id2_deg = -18.3
 carry_id3_deg = -45.0
 carry_id4_deg = 51.8
 carry_id5_deg = 0.1
+place_id1_deg = 0.0
+place_id2_deg = -19.8
+place_id3_deg = -19.7
+place_id4_deg = 62.5
+place_id5_deg = 0.0
+place_forward_offset_cm = 0.0
+place_lateral_offset_cm = 0.0
+place_height_offset_cm = 0.0
+place_pitch_offset_deg = 0.0
+place_hover_clearance_cm = 2.5
+place_settle_ms = 500
 carry_duration_ms = 2000
 carry_settle_ms = 500
+arm_speed_scale = 0.5
 ```
 
 ID1～ID5依次对应肩部水平、肩部抬升、肘部、腕部俯仰和腕部旋转。ID6夹爪不记录
-在两组姿态中，继续使用原有开合量。
+在三组姿态中，继续使用原有开合量。
 
 ## 9. 抓取调参
 
@@ -368,6 +380,33 @@ config/lekiwi_pick_config.txt
 ```bash
 ./build/tennis test-new-arm /dev/ttyACM0 ik-pick
 ```
+
+放球采用独立的安全姿态和 S 曲线。首次调整时不要直接运行完整程序，按顺序测试：
+
+```bash
+./build/tennis test-new-arm auto config-check
+./build/tennis test-new-arm auto task carry
+./build/tennis test-new-arm auto task place-hover
+./build/tennis test-new-arm auto task place-release
+./build/tennis test-new-arm auto task place-cycle
+```
+
+`place-hover` 只到桶口上方，`place-release` 再垂直慢速下降但不会打开夹爪；两者都
+安全后才运行 `place-cycle`。完整顺序是：收球姿态 → 桶口上方 → 放球姿态 → 打开
+夹爪 → 原路抬升 → 收球姿态。调整规则如下：
+
+```text
+伸得过远/不足：减小/增大 place_forward_offset_cm
+偏左/偏右：调整 place_lateral_offset_cm（正数向左）
+位置太低/太高：增大/减小 place_height_offset_cm
+夹爪俯仰不合适：调整 place_pitch_offset_deg
+桶沿安全距离不足：增大 place_hover_clearance_cm
+整体速度：arm_speed_scale（0.3首次调试，0.5稳定运行）
+```
+
+每次位置只改 `0.5cm`、角度只改 `5°`，修改后先运行 `config-check`。如果悬停点超出
+机械臂工作空间或腕部安全角度，校验会拒绝动作。HOME 和程序启动回位独立限制为
+25°/s，不受 `arm_speed_scale` 影响。
 
 现场调参规则：
 

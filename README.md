@@ -115,6 +115,7 @@ config/lekiwi_calibration.json
 ./build/tennis test-new-arm /dev/ttyACM0 pos
 ./build/tennis test-new-arm /dev/ttyACM0 grab
 ./build/tennis test-new-arm /dev/ttyACM0 ik-pick
+./build/tennis test-new-arm /dev/ttyACM0 ik-put
 ./build/tennis test-new-arm /dev/ttyACM0 release
 ./build/tennis test-new-arm /dev/ttyACM0 show
 ./build/tennis test-new-arm /dev/ttyACM0 torque-off
@@ -125,6 +126,7 @@ config/lekiwi_calibration.json
 - `pos`：移动到初始/待机姿态。
 - `grab`：执行旧的语义抓取动作。
 - `ik-pick`：执行当前闭环使用的逆运动学抓取序列，用于单独调试抓球位置。
+- `ik-put`：执行高位悬停、慢速下降、放球、抬升和收臂的完整放球序列。
 - `release`：打开夹爪放球。
 - `show`：抬起展示姿态。
 - `torque-off`：关闭机械臂扭矩。
@@ -158,6 +160,21 @@ config/lekiwi_pick_config.txt
 ```bash
 ./build/tennis test-new-arm /dev/ttyACM0 ik-pick
 ```
+
+放球必须分阶段确认，确认前两步不会碰桶后再执行完整循环：
+
+```bash
+./build/tennis test-new-arm /dev/ttyACM0 config-check
+./build/tennis test-new-arm /dev/ttyACM0 task carry
+./build/tennis test-new-arm /dev/ttyACM0 task place-hover
+./build/tennis test-new-arm /dev/ttyACM0 task place-release
+./build/tennis test-new-arm /dev/ttyACM0 task place-cycle
+```
+
+`place_id1_deg`～`place_id5_deg` 是桶内释放姿态；位置不合适时优先调整
+`place_forward/lateral/height_offset_cm`，`place_hover_clearance_cm` 是下降前及释放后
+的垂直安全高度。`arm_speed_scale=0.5` 是稳定运行速度。程序启动及 HOME 返回使用
+独立的 25°/s 限速。
 
 常用调参规则：
 

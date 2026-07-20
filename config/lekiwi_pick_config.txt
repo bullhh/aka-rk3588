@@ -26,7 +26,7 @@ grab_lateral_offset_cm = 0.0
 
 # 正数升高，负数降低。
 # 例：夹爪比球低约0.5cm时改成+0.5；比球高约0.5cm时改成-0.5。
-grab_height_offset_cm = 0.0
+grab_height_offset_cm = -1.0
 
 # 直接加到最终grab_id4_deg，单位为度，建议每次改5。
 # 它不会改变ID6夹爪力度；如果方向变差，就改为相反符号测试。
@@ -40,6 +40,26 @@ carry_id3_deg = -45.0
 carry_id4_deg = 51.8
 carry_id5_deg = 0.1
 
+# 放球最终姿态：ID1～ID5到达这里后ID6才打开。默认值来自参考程序实际
+# 放球几何，并将末端抬到约20cm高度，避免旧逻辑只抬ID2后末端贴近桶沿。
+# 实机手动确认后只替换下面五个值，不记录ID6。
+place_id1_deg = 0.0
+place_id2_deg = -19.8
+place_id3_deg = -19.7
+place_id4_deg = 62.5
+place_id5_deg = 0.0
+
+# 放桶位置快速修正，方向和grab对应参数相同；建议每次只改0.5cm或5度。
+place_forward_offset_cm = 0.0
+place_lateral_offset_cm = 0.0
+place_height_offset_cm = 0.0
+place_pitch_offset_deg = 0.0
+
+# 程序先到桶口上方，再垂直下降到place姿态；放球后先原路垂直撤离。
+# 当前机械臂工作空间下默认安全悬停2.5cm，增大前必须通过配置校验。
+place_hover_clearance_cm = 2.5
+place_settle_ms = 500
+
 # ID6夹爪开合量。保持现有夹球力度时不要修改。
 # open为正表示在当前夹爪角度基础上打开；close为负表示闭合。
 gripper_open_delta_deg = 60.0
@@ -49,6 +69,10 @@ gripper_close_delta_deg = -60.0
 # duration越大收臂越慢、更柔和；过小会显得突然。settle只增加到位等待时间。
 carry_duration_ms = 2000
 carry_settle_ms = 500
+
+# 机械臂动作总速度倍率：0.3用于首次调试，0.5用于稳定运行，最大1.0。
+# HOME使用独立的25度/秒限制，不受该倍率影响。
+arm_speed_scale = 0.5
 
 # 视觉停车参数。检测框尺寸取网球检测框宽、高中的较大值。
 # 目标尺寸：增大表示机器人需要更靠近球才停车；减小表示离球更远就停车。

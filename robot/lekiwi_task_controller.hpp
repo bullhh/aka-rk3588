@@ -11,26 +11,40 @@
 
 struct LeKiwiPickConfig {
     // Recorded arm poses use calibrated degrees for Feetech IDs 1..5.
-    float grab_id1_deg = -12.0f;
+    float grab_id1_deg = -18.0f;
     float grab_id2_deg = 37.7f;
-    float grab_id3_deg = 42.1f;
-    float grab_id4_deg = 0.2f;
+    float grab_id3_deg = 20.0f;
+    float grab_id4_deg = 40.0f;
     float grab_id5_deg = 0.0f;
-    float grab_forward_offset_cm = 0.0f;
+    float grab_forward_offset_cm = -1.0f;
     float grab_lateral_offset_cm = 0.0f;
-    float grab_height_offset_cm = 0.0f;
+    float grab_height_offset_cm = -1.0f;
     float grab_pitch_offset_deg = 0.0f;
     float carry_id1_deg = -11.3f;
     float carry_id2_deg = -18.3f;
     float carry_id3_deg = -45.0f;
     float carry_id4_deg = 51.8f;
     float carry_id5_deg = 0.1f;
+    // Recorded release pose above the bucket. The hover pose is derived by
+    // moving vertically upward from this pose.
+    float place_id1_deg = 0.0f;
+    float place_id2_deg = -19.8f;
+    float place_id3_deg = -19.7f;
+    float place_id4_deg = 62.5f;
+    float place_id5_deg = 0.0f;
+    float place_forward_offset_cm = 0.0f;
+    float place_lateral_offset_cm = 0.0f;
+    float place_height_offset_cm = 0.0f;
+    float place_pitch_offset_deg = 0.0f;
+    float place_hover_clearance_cm = 2.5f;
+    int place_settle_ms = 500;
+    float arm_speed_scale = 0.5f;
     float gripper_open_delta_deg = 60.0f;
     float gripper_close_delta_deg = -60.0f;
     int carry_duration_ms = 2000;
     int carry_settle_ms = 500;
     int ball_stop_size_px = 155;
-    int ball_stop_tolerance_px = 15;
+    int ball_stop_tolerance_px = 5;
     int ball_center_tolerance_px = 30;
     int ball_stable_frames = 2;
 
@@ -45,6 +59,7 @@ struct LeKiwiPickConfig {
 
     bool load(const std::string& path = "config/lekiwi_pick_config.txt");
     bool save(const std::string& path = "config/lekiwi_pick_config.txt") const;
+    bool validate(std::string& error) const;
     int carry_duration_ticks() const { return std::max(1, (carry_duration_ms + 49) / 50); }
     int carry_settle_ticks() const { return std::max(0, (carry_settle_ms + 49) / 50); }
 };
@@ -103,6 +118,7 @@ public:
     bool begin_pick();
     bool begin_pick(const LeKiwiPickConfig& config);
     bool begin_put();
+    bool begin_stage(const std::string& stage);
     bool tick();
     bool active() const { return active_; }
     bool done() const { return done_; }
@@ -122,6 +138,7 @@ private:
         JOINT_TARGET,
         WRIST_FLEX,
         CARRY,
+        SMOOTH_POSE,
         GAP,
     };
 
@@ -135,6 +152,9 @@ private:
 
     static std::vector<Step> pick_sequence(const LeKiwiPickConfig& config);
     static std::vector<Step> put_sequence(const LeKiwiPickConfig& config);
+    bool build_named_pose(const std::string& name,
+                          std::map<std::string, float>& pose,
+                          std::string& error) const;
     static void inverse_kinematics(float x, float y, float& shoulder_lift, float& elbow_flex);
     static void forward_kinematics(float shoulder_lift, float elbow_flex, float& x, float& y);
     static float apply_joint_calibration(const std::string& joint, float value);
@@ -161,11 +181,19 @@ private:
     float pitch_ = 80.0f;
     float move_start_distance_ = 0.0f;
     float move_start_wrist_ = 0.0f;
+    float step_start_measured_x_ = 0.0f;
+    float step_start_measured_y_ = 0.0f;
+    float step_best_distance_ = 1.0e9f;
+    int step_last_progress_tick_ = 0;
     float previous_gripper_position_ = 0.0f;
     int gripper_stable_ticks_ = 0;
     bool have_previous_gripper_position_ = false;
     bool gripper_contact_ = false;
     std::map<std::string, float> carry_start_targets_;
+    std::map<std::string, float> smooth_start_targets_;
+    std::map<std::string, float> smooth_goal_targets_;
+    int smooth_duration_ticks_ = 0;
+    int smooth_settle_ticks_ = 0;
     std::map<std::string, float> targets_;
     std::map<std::string, float> observed_;
     std::map<std::string, float> commanded_;

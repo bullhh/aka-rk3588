@@ -250,7 +250,8 @@ static void usage(const char* prog) {
     LOGI("  %s test-bucket [uvc_index]               -- red bucket detect -> bucket.jpg", prog);
     LOGI("  %s test-feetech [uart_dev] <scan|read|torque-off> -- STS3215 bus test", prog);
     LOGI("  %s test-base [uart_dev] <forward|backward|left|right|rotate-left|rotate-right|stop> [level]", prog);
-    LOGI("  %s test-new-arm [uart_dev] <calibrate|calib-check|pos|grab|release|show|torque-off|set name deg|raw name value>", prog);
+    LOGI("  %s test-new-arm [uart_dev] <calibrate|calib-check|config-check|pos|grab|ik-pick|ik-put|release|show|torque-off>", prog);
+    LOGI("  %s test-new-arm [uart_dev] task <home|carry|place-hover|place-release|place-cycle>", prog);
 }
 
 class LegacyDriveAdapter : public DriveAdapter {
@@ -782,7 +783,7 @@ int main(int argc, char** argv)
                     return 1;
                 }
                 dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] PUT_BALL start IK put sequence\n");
+                printf("[GAME] PUT_BALL start safe S-curve place sequence\n");
                 dup2(g_devnull, STDERR_FILENO);
             }
 
