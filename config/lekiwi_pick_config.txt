@@ -44,16 +44,10 @@ carry_id5_deg = 0.1
 # 放球几何，并将末端抬到约20cm高度，避免旧逻辑只抬ID2后末端贴近桶沿。
 # 实机手动确认后只替换下面五个值，不记录ID6。
 place_id1_deg = 0.0
-place_id2_deg = -19.8
-place_id3_deg = -19.7
-place_id4_deg = 62.5
+place_id2_deg = 10.4
+place_id3_deg = -55.7
+place_id4_deg = 80.0
 place_id5_deg = 0.0
-
-# 放桶位置只保留现场需要的前后和高度修正，单位厘米，建议每次改0.5。
-# 正数向桶内前伸，负数向机器人方向收回。
-place_forward_offset_cm = 5.0
-# 正数升高，负数降低。
-place_height_offset_cm = 0.0
 
 # 桶检测框宽、高中较小的一边达到该像素值后停车。
 # 增大表示小车更靠近桶，减小表示离桶更远；建议每次调整10～20。

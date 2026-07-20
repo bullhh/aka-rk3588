@@ -347,12 +347,10 @@ carry_id3_deg = -45.0
 carry_id4_deg = 51.8
 carry_id5_deg = 0.1
 place_id1_deg = 0.0
-place_id2_deg = -19.8
-place_id3_deg = -19.7
-place_id4_deg = 62.5
+place_id2_deg = 10.4
+place_id3_deg = -55.7
+place_id4_deg = 80.0
 place_id5_deg = 0.0
-place_forward_offset_cm = 5.0
-place_height_offset_cm = 0.0
 bucket_stop_size_px = 325
 carry_duration_ms = 2000
 carry_settle_ms = 500
@@ -402,20 +400,23 @@ config/lekiwi_pick_config.txt
 放球姿态，但不会打开夹爪。两者都安全后才运行 `place-cycle`。完整顺序是：收球姿态
 → 高位收回点 → 向前下降到放球姿态 → 打开夹爪 → 原路撤离 → 收球姿态。
 
+高位接近姿态固定为已验证角度，不随放球配置变化。`place_id2_deg`、`place_id3_deg`、
+`place_id4_deg` 是最终放球时严格执行的关节角度，不再通过前后或高度偏移重新计算。
+
 调整规则如下：
 
 ```text
 小车离桶太远：增大 bucket_stop_size_px
 小车离桶太近：减小 bucket_stop_size_px
-伸得过远/不足：减小/增大 place_forward_offset_cm
-位置太低/太高：增大/减小 place_height_offset_cm
+最终伸展和高度：直接调整 place_id2_deg、place_id3_deg
+最终夹爪俯仰：直接调整 place_id4_deg
 整体速度：arm_speed_scale（0.3首次调试，0.5稳定运行）
 ```
 
-优先以 `10～20px` 为步长调整停车距离，再以 `0.5cm` 为步长微调机械臂。修改后先
-运行 `config-check`。如果安全接近点、放球点或两者之间的路径超出机械臂工作空间，
-校验会拒绝动作。安全接近高度和到位等待由程序内部管理，不再作为现场参数。HOME
-和程序启动回位独立限制为25°/s，不受 `arm_speed_scale` 影响。
+优先以 `10～20px` 为步长调整停车距离，再以小角度修改 ID2、ID3、ID4。修改后先
+运行 `config-check`。如果最终关节角度或从固定接近姿态到放球姿态的路径越界，校验
+会拒绝动作。安全接近姿态和到位等待由程序内部管理，不再作为现场参数。HOME 和
+程序启动回位独立限制为25°/s，不受 `arm_speed_scale` 影响。
 
 现场调参规则：
 
