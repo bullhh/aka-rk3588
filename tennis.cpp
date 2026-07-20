@@ -148,6 +148,18 @@ static long elapsed_us(const struct timeval& start) {
     return (now.tv_sec - start.tv_sec) * 1000000L + (now.tv_usec - start.tv_usec);
 }
 
+static double monotonic_ms_now() {
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+}
+
+static bool env_bool(const char* name, bool default_value) {
+    const char* value = getenv(name);
+    if (!value || !value[0]) return default_value;
+    return strcmp(value, "0") != 0 && strcmp(value, "false") != 0;
+}
+
 // ── JPEG decode -> RGB letterbox ─────────────────────────────────────────────
 static int decode_mjpeg(const uint8_t* jpeg_data, size_t jpeg_len,
                         uint8_t* rgb_out, int out_w, int out_h,
@@ -361,6 +373,10 @@ int main(int argc, char** argv)
     const char* fake_ball_env = getenv("LEKIWI_FAKE_BALL");
     if (fake_ball_env && strcmp(fake_ball_env, "0") != 0 && strcmp(fake_ball_env, "false") != 0)
         fake_ball = true;
+    // Vision is not consumed while the blocking arm sequence runs. Pausing the
+    // UVC stream avoids camera/servo contention on their shared USB bus.
+    const bool pause_uvc_during_arm =
+        env_bool("LEKIWI_PAUSE_UVC_DURING_ARM", true);
     for (int i = 6; i < argc; i++) {
         if (strcmp(argv[i], "--stop-after-chase") == 0) {
             stop_after_chase = true;
@@ -564,6 +580,7 @@ int main(int argc, char** argv)
     LeKiwiMoveController lekiwi_move(FRAME_WIDTH, FRAME_HEIGHT);
     LeKiwiArmController* lekiwi_arm_ctrl = use_lekiwi ? new LeKiwiArmController(*ft_arm_ptr) : nullptr;
     int lekiwi_arm_log_tick = 0;
+    bool capture_paused_for_arm = false;
     LeKiwiPickConfig lekiwi_pick_base_config;
     lekiwi_pick_base_config.load();
     // Retry offsets are expressed in centimetres to match lekiwi_pick_config.txt.
@@ -620,6 +637,19 @@ int main(int argc, char** argv)
 
         if (use_lekiwi && game_state == GameState::PICK_BALL) {
             drive_ptr->standby();
+            if (pause_uvc_during_arm && !capture_paused_for_arm) {
+                const double start_ms = monotonic_ms_now();
+                if (capture.pause() != 0) {
+                    LOGE("Failed to pause UVC before PICK_BALL");
+                    cleanup_and_exit();
+                    return 1;
+                }
+                capture_paused_for_arm = true;
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[UvcCapture] paused before PICK_BALL in %.1f ms\n",
+                       monotonic_ms_now() - start_ms);
+                dup2(g_devnull, STDERR_FILENO);
+            }
             if (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->active() &&
                 !lekiwi_arm_ctrl->done() && !lekiwi_arm_ctrl->failed()) {
                 lekiwi_pick_attempt_config = lekiwi_pick_base_config;
@@ -680,6 +710,20 @@ int main(int argc, char** argv)
             }
 
             if (lekiwi_arm_ctrl->done()) {
+                if (capture_paused_for_arm) {
+                    const double start_ms = monotonic_ms_now();
+                    if (capture.resume() != 0) {
+                        dup2(g_saved_stderr, STDERR_FILENO);
+                        printf("[UvcCapture] resume after PICK_BALL failed\n");
+                        cleanup_and_exit();
+                        return 1;
+                    }
+                    capture_paused_for_arm = false;
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[UvcCapture] resumed after PICK_BALL in %.1f ms\n",
+                           monotonic_ms_now() - start_ms);
+                    dup2(g_devnull, STDERR_FILENO);
+                }
                 float gripper_pos = 0.0f;
                 bool gripper_holds = lekiwi_arm_ctrl->verify_grab(&gripper_pos);
                 if (lekiwi_arm_ctrl->failed()) {
@@ -693,7 +737,7 @@ int main(int argc, char** argv)
                 long post_ti = 0, post_tr = 0, post_to = 0, post_tp = 0;
                 long post_frame_us = 0;
 
-                int post_jpeg_len = capture.getFrame(mjpeg_buf, MJPEG_BUF, 250);
+                int post_jpeg_len = capture.getFrame(mjpeg_buf, MJPEG_BUF, 1000);
                 if (post_jpeg_len > 0) {
                     long post_th = 0, post_td = 0, post_tc = 0;
                     int post_lb_x = 0, post_lb_y = 0;
@@ -810,6 +854,19 @@ int main(int argc, char** argv)
 
         if (use_lekiwi && game_state == GameState::PUT_BALL) {
             drive_ptr->standby();
+            if (pause_uvc_during_arm && !capture_paused_for_arm) {
+                const double start_ms = monotonic_ms_now();
+                if (capture.pause() != 0) {
+                    LOGE("Failed to pause UVC before PUT_BALL");
+                    cleanup_and_exit();
+                    return 1;
+                }
+                capture_paused_for_arm = true;
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[UvcCapture] paused before PUT_BALL in %.1f ms\n",
+                       monotonic_ms_now() - start_ms);
+                dup2(g_devnull, STDERR_FILENO);
+            }
             if (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->active() &&
                 !lekiwi_arm_ctrl->done() && !lekiwi_arm_ctrl->failed()) {
                 if (!lekiwi_arm_ctrl->begin_put()) {
@@ -847,6 +904,20 @@ int main(int argc, char** argv)
             }
 
             if (lekiwi_arm_ctrl->done()) {
+                if (capture_paused_for_arm) {
+                    const double start_ms = monotonic_ms_now();
+                    if (capture.resume() != 0) {
+                        dup2(g_saved_stderr, STDERR_FILENO);
+                        printf("[UvcCapture] resume after PUT_BALL failed\n");
+                        cleanup_and_exit();
+                        return 1;
+                    }
+                    capture_paused_for_arm = false;
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[UvcCapture] resumed after PUT_BALL in %.1f ms\n",
+                           monotonic_ms_now() - start_ms);
+                    dup2(g_devnull, STDERR_FILENO);
+                }
                 if (bucket_place_demo) {
                     dup2(g_saved_stderr, STDERR_FILENO);
                     printf("[DEMO] bucket/place sequence completed successfully\n");

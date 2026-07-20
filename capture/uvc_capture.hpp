@@ -24,6 +24,9 @@ public:
              int fps = 30);
 
     void close();
+    int pause();
+    int resume();
+    bool streaming() const { return streaming_; }
 
     // Block until the next frame arrives (or timeout_ms elapses).
     // Copies MJPEG data into buf (capacity cap).
@@ -53,6 +56,7 @@ private:
     size_t   pending_len_  = 0;
     size_t   pending_cap_  = 0;
     bool     has_pending_  = false;
+    bool     streaming_ = false;
 };
 
 #endif // UVC_CAPTURE_HPP

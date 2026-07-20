@@ -88,6 +88,7 @@ int UvcCapture::open(int device_index, int width, int height, int fps)
         uvc_exit(ctx_);   ctx_  = nullptr;
         return -1;
     }
+    streaming_ = true;
 
     printf("[UvcCapture] streaming %dx%d @ %d fps\n", width, height, fps);
     return 0;
@@ -95,8 +96,11 @@ int UvcCapture::open(int device_index, int width, int height, int fps)
 
 void UvcCapture::close()
 {
-    if (devh_) {
+    if (devh_ && streaming_) {
         uvc_stop_streaming(devh_);
+        streaming_ = false;
+    }
+    if (devh_) {
         uvc_close(devh_);
         devh_ = nullptr;
     }
@@ -104,6 +108,32 @@ void UvcCapture::close()
         uvc_exit(ctx_);
         ctx_ = nullptr;
     }
+}
+
+int UvcCapture::pause()
+{
+    if (!devh_ || !streaming_) return 0;
+    uvc_stop_streaming(devh_);
+    streaming_ = false;
+    pthread_mutex_lock(&mutex_);
+    has_pending_ = false;
+    pending_len_ = 0;
+    pthread_mutex_unlock(&mutex_);
+    return 0;
+}
+
+int UvcCapture::resume()
+{
+    if (!devh_) return -1;
+    if (streaming_) return 0;
+    int res = uvc_start_streaming(devh_, &ctrl_, frame_cb, this, 0);
+    if (res < 0) {
+        fprintf(stderr, "[UvcCapture] resume failed: %s\n",
+                uvc_strerror((uvc_error_t)res));
+        return -1;
+    }
+    streaming_ = true;
+    return 0;
 }
 
 // ── frame callback (libuvc thread) ───────────────────────────────────────────
