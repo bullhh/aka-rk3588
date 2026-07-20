@@ -1015,7 +1015,7 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
     auto print_usage = []() {
         printf("Usage:\n");
         printf("  tennis test-new-arm [dev] calibrate|calib-check|config-check|pos|grab|ik-pick|ik-put|release|release-pos|show|torque-off\n");
-        printf("  tennis test-new-arm [dev] task home|carry|place-hover|place-release|place-cycle\n");
+        printf("  tennis test-new-arm [dev] task home|carry|place-approach|place-release|place-cycle\n");
         printf("  tennis test-new-arm [dev] set <joint_name> <deg>\n");
         printf("  tennis test-new-arm [dev] raw <joint_name> <raw_0_4095>\n");
         printf("  tennis test-new-arm [dev] pose-save <name>\n");

@@ -251,7 +251,7 @@ static void usage(const char* prog) {
     LOGI("  %s test-feetech [uart_dev] <scan|read|torque-off> -- STS3215 bus test", prog);
     LOGI("  %s test-base [uart_dev] <forward|backward|left|right|rotate-left|rotate-right|stop> [level]", prog);
     LOGI("  %s test-new-arm [uart_dev] <calibrate|calib-check|config-check|pos|grab|ik-pick|ik-put|release|show|torque-off>", prog);
-    LOGI("  %s test-new-arm [uart_dev] task <home|carry|place-hover|place-release|place-cycle>", prog);
+    LOGI("  %s test-new-arm [uart_dev] task <home|carry|place-approach|place-release|place-cycle>", prog);
 }
 
 class LegacyDriveAdapter : public DriveAdapter {
@@ -874,8 +874,9 @@ int main(int argc, char** argv)
                 else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
 
                 dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d size=%d/%d L=%d R=%d stable=%d\n",
+                printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d size=%d/%d target=%d L=%d R=%d stable=%d\n",
                        bucket_visible ? 1 : 0, cmd.label, br.cx, br.w, br.h,
+                       lekiwi_move.bucket_target_position(),
                        cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
                 dup2(g_devnull, STDERR_FILENO);
 

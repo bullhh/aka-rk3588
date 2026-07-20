@@ -18,7 +18,7 @@ grab_id5_deg = 0.0
 # 夹球位置快速修正。单位为厘米，建议每次只改0.5；0表示使用上面的基础姿态。
 # 正数向机器人前方伸远，负数向机器人方向收近。
 # 例：夹爪伸过球约1cm，改成-1.0；夹爪还差1cm够不到球，改成+1.0。
-grab_forward_offset_cm = -1.0
+grab_forward_offset_cm = -1.5
 
 # 正数向机器人左侧移动，负数向机器人右侧移动。
 # 例：夹爪在球右边约0.5cm，需要向左修正时改成+0.5。
@@ -49,16 +49,15 @@ place_id3_deg = -19.7
 place_id4_deg = 62.5
 place_id5_deg = 0.0
 
-# 放桶位置快速修正，方向和grab对应参数相同；建议每次只改0.5cm或5度。
-place_forward_offset_cm = 0.0
-place_lateral_offset_cm = 0.0
+# 放桶位置只保留现场需要的前后和高度修正，单位厘米，建议每次改0.5。
+# 正数向桶内前伸，负数向机器人方向收回。
+place_forward_offset_cm = 5.0
+# 正数升高，负数降低。
 place_height_offset_cm = 0.0
-place_pitch_offset_deg = 0.0
 
-# 程序先到桶口上方，再垂直下降到place姿态；放球后先原路垂直撤离。
-# 当前机械臂工作空间下默认安全悬停2.5cm，增大前必须通过配置校验。
-place_hover_clearance_cm = 2.5
-place_settle_ms = 500
+# 桶检测框宽、高中较小的一边达到该像素值后停车。
+# 增大表示小车更靠近桶，减小表示离桶更远；建议每次调整10～20。
+bucket_stop_size_px = 325
 
 # ID6夹爪开合量。保持现有夹球力度时不要修改。
 # open为正表示在当前夹爪角度基础上打开；close为负表示闭合。

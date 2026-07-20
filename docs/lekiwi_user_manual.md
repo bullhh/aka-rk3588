@@ -337,7 +337,7 @@ grab_id2_deg = 37.7
 grab_id3_deg = 20.0
 grab_id4_deg = 40.0
 grab_id5_deg = 0.0
-grab_forward_offset_cm = -1.0
+grab_forward_offset_cm = -1.5
 grab_lateral_offset_cm = 0.0
 grab_height_offset_cm = -1.0
 grab_pitch_offset_deg = 0.0
@@ -351,12 +351,9 @@ place_id2_deg = -19.8
 place_id3_deg = -19.7
 place_id4_deg = 62.5
 place_id5_deg = 0.0
-place_forward_offset_cm = 0.0
-place_lateral_offset_cm = 0.0
+place_forward_offset_cm = 5.0
 place_height_offset_cm = 0.0
-place_pitch_offset_deg = 0.0
-place_hover_clearance_cm = 2.5
-place_settle_ms = 500
+bucket_stop_size_px = 325
 carry_duration_ms = 2000
 carry_settle_ms = 500
 arm_speed_scale = 0.5
@@ -386,27 +383,29 @@ config/lekiwi_pick_config.txt
 ```bash
 ./build/tennis test-new-arm auto config-check
 ./build/tennis test-new-arm auto task carry
-./build/tennis test-new-arm auto task place-hover
+./build/tennis test-new-arm auto task place-approach
 ./build/tennis test-new-arm auto task place-release
 ./build/tennis test-new-arm auto task place-cycle
 ```
 
-`place-hover` 只到桶口上方，`place-release` 再垂直慢速下降但不会打开夹爪；两者都
-安全后才运行 `place-cycle`。完整顺序是：收球姿态 → 桶口上方 → 放球姿态 → 打开
-夹爪 → 原路抬升 → 收球姿态。调整规则如下：
+`place-approach` 只到桶口上方的高位收回点；`place-release` 再平滑向前、向下进入
+放球姿态，但不会打开夹爪。两者都安全后才运行 `place-cycle`。完整顺序是：收球姿态
+→ 高位收回点 → 向前下降到放球姿态 → 打开夹爪 → 原路撤离 → 收球姿态。
+
+调整规则如下：
 
 ```text
+小车离桶太远：增大 bucket_stop_size_px
+小车离桶太近：减小 bucket_stop_size_px
 伸得过远/不足：减小/增大 place_forward_offset_cm
-偏左/偏右：调整 place_lateral_offset_cm（正数向左）
 位置太低/太高：增大/减小 place_height_offset_cm
-夹爪俯仰不合适：调整 place_pitch_offset_deg
-桶沿安全距离不足：增大 place_hover_clearance_cm
 整体速度：arm_speed_scale（0.3首次调试，0.5稳定运行）
 ```
 
-每次位置只改 `0.5cm`、角度只改 `5°`，修改后先运行 `config-check`。如果悬停点超出
-机械臂工作空间或腕部安全角度，校验会拒绝动作。HOME 和程序启动回位独立限制为
-25°/s，不受 `arm_speed_scale` 影响。
+优先以 `10～20px` 为步长调整停车距离，再以 `0.5cm` 为步长微调机械臂。修改后先
+运行 `config-check`。如果安全接近点、放球点或两者之间的路径超出机械臂工作空间，
+校验会拒绝动作。安全接近高度和到位等待由程序内部管理，不再作为现场参数。HOME
+和程序启动回位独立限制为25°/s，不受 `arm_speed_scale` 影响。
 
 现场调参规则：
 

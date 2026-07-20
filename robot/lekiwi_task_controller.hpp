@@ -16,7 +16,7 @@ struct LeKiwiPickConfig {
     float grab_id3_deg = 20.0f;
     float grab_id4_deg = 40.0f;
     float grab_id5_deg = 0.0f;
-    float grab_forward_offset_cm = -1.0f;
+    float grab_forward_offset_cm = -1.5f;
     float grab_lateral_offset_cm = 0.0f;
     float grab_height_offset_cm = -1.0f;
     float grab_pitch_offset_deg = 0.0f;
@@ -25,19 +25,17 @@ struct LeKiwiPickConfig {
     float carry_id3_deg = -45.0f;
     float carry_id4_deg = 51.8f;
     float carry_id5_deg = 0.1f;
-    // Recorded release pose above the bucket. The hover pose is derived by
-    // moving vertically upward from this pose.
+    // Recorded release pose above the bucket. A high, retracted approach pose
+    // is derived internally so forward tuning does not also extend the arm at
+    // its highest point.
     float place_id1_deg = 0.0f;
     float place_id2_deg = -19.8f;
     float place_id3_deg = -19.7f;
     float place_id4_deg = 62.5f;
     float place_id5_deg = 0.0f;
-    float place_forward_offset_cm = 0.0f;
-    float place_lateral_offset_cm = 0.0f;
+    float place_forward_offset_cm = 5.0f;
     float place_height_offset_cm = 0.0f;
-    float place_pitch_offset_deg = 0.0f;
-    float place_hover_clearance_cm = 2.5f;
-    int place_settle_ms = 500;
+    int bucket_stop_size_px = 325;
     float arm_speed_scale = 0.5f;
     float gripper_open_delta_deg = 60.0f;
     float gripper_close_delta_deg = -60.0f;
@@ -84,6 +82,7 @@ public:
     int target_left() const { return left_; }
     int target_right() const { return right_; }
     int target_position() const { return target_position_; }
+    int bucket_target_position() const { return bucket_target_position_; }
 
 private:
     struct TargetBox {
@@ -106,6 +105,7 @@ private:
     int right_ = 0;
     int target_cx_ = 0;
     int target_position_ = 0;
+    int bucket_target_position_ = 325;
     int stable_count_ = 0;
     int last_target_cx_ = -1;
     LeKiwiPickConfig config_;

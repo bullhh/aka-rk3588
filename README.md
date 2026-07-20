@@ -166,14 +166,15 @@ config/lekiwi_pick_config.txt
 ```bash
 ./build/tennis test-new-arm /dev/ttyACM0 config-check
 ./build/tennis test-new-arm /dev/ttyACM0 task carry
-./build/tennis test-new-arm /dev/ttyACM0 task place-hover
+./build/tennis test-new-arm /dev/ttyACM0 task place-approach
 ./build/tennis test-new-arm /dev/ttyACM0 task place-release
 ./build/tennis test-new-arm /dev/ttyACM0 task place-cycle
 ```
 
 `place_id1_deg`～`place_id5_deg` 是桶内释放姿态；位置不合适时优先调整
-`place_forward/lateral/height_offset_cm`，`place_hover_clearance_cm` 是下降前及释放后
-的垂直安全高度。`arm_speed_scale=0.5` 是稳定运行速度。程序启动及 HOME 返回使用
+`bucket_stop_size_px`，让小车停在合适距离，再用 `place_forward_offset_cm` 和
+`place_height_offset_cm` 做小范围修正。程序自动生成高位收回的安全接近点，不要求
+用户配置悬停高度。`arm_speed_scale=0.5` 是稳定运行速度；程序启动及 HOME 返回使用
 独立的 25°/s 限速。
 
 常用调参规则：

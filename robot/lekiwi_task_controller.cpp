@@ -88,17 +88,21 @@ struct ResolvedGrabTarget {
 };
 
 struct ResolvedPlaceTarget {
-    float x = 0.0f;
+    float release_x = 0.0f;
     float release_y = 0.0f;
-    float hover_y = 0.0f;
+    float approach_x = 0.0f;
+    float approach_y = 0.0f;
     float pan = 0.0f;
     float release_shoulder = 0.0f;
     float release_elbow = 0.0f;
     float release_wrist = 0.0f;
-    float hover_shoulder = 0.0f;
-    float hover_elbow = 0.0f;
-    float hover_wrist = 0.0f;
+    float approach_shoulder = 0.0f;
+    float approach_elbow = 0.0f;
+    float approach_wrist = 0.0f;
 };
+
+constexpr float kPlaceApproachClearanceM = 0.025f;
+constexpr int kPlaceSettleMs = 500;
 
 static ResolvedGrabTarget resolve_grab_target(const LeKiwiPickConfig& config) {
     float reference_x = 0.0f;
@@ -134,24 +138,25 @@ static ResolvedPlaceTarget resolve_place_target(const LeKiwiPickConfig& config) 
     float reference_y = 0.0f;
     solve_forward_kinematics(config.place_id2_deg, config.place_id3_deg,
                              reference_x, reference_y);
-    const float forward = reference_x + config.place_forward_offset_cm / 100.0f;
-    const float lateral = config.place_lateral_offset_cm / 100.0f;
 
     ResolvedPlaceTarget target;
-    target.x = std::sqrt(forward * forward + lateral * lateral);
+    target.release_x = reference_x + config.place_forward_offset_cm / 100.0f;
     target.release_y = reference_y + config.place_height_offset_cm / 100.0f;
-    target.hover_y = target.release_y + config.place_hover_clearance_cm / 100.0f;
-    target.pan = config.place_id1_deg +
-                 std::atan2(lateral, std::max(0.01f, forward)) *
-                 180.0f / (float)M_PI;
-    target.release_wrist = config.place_id4_deg + config.place_pitch_offset_deg;
-    solve_inverse_kinematics(target.x, target.release_y,
+    // Keep the safe waypoint high but retracted. A vertical waypoint at the
+    // final forward offset can exceed the two-link workspace even when both
+    // this approach point and the release point are individually reachable.
+    target.approach_x = std::min(reference_x, target.release_x);
+    target.approach_y = target.release_y + kPlaceApproachClearanceM;
+    target.pan = config.place_id1_deg;
+    target.release_wrist = config.place_id4_deg;
+    solve_inverse_kinematics(target.release_x, target.release_y,
                              target.release_shoulder, target.release_elbow);
-    solve_inverse_kinematics(target.x, target.hover_y,
-                             target.hover_shoulder, target.hover_elbow);
+    solve_inverse_kinematics(target.approach_x, target.approach_y,
+                             target.approach_shoulder, target.approach_elbow);
     const float pitch = config.place_id2_deg + config.place_id3_deg +
                         target.release_wrist;
-    target.hover_wrist = pitch - target.hover_shoulder - target.hover_elbow;
+    target.approach_wrist = pitch - target.approach_shoulder -
+                            target.approach_elbow;
     return target;
 }
 
@@ -247,16 +252,63 @@ static bool validate_place_target(const LeKiwiPickConfig& config,
         }
         return true;
     };
-    return check_point("place release", target.x, target.release_y) &&
-           check_point("place hover", target.x, target.hover_y) &&
-           check_joint("place pan", target.pan, kArmLimit) &&
-           check_joint("place release shoulder", target.release_shoulder, kArmLimit) &&
-           check_joint("place release elbow", target.release_elbow, kArmLimit) &&
-           check_joint("place release wrist", target.release_wrist, kWristLimit) &&
-           check_joint("place hover shoulder", target.hover_shoulder, kArmLimit) &&
-           check_joint("place hover elbow", target.hover_elbow, kArmLimit) &&
-           check_joint("place hover wrist", target.hover_wrist, kWristLimit) &&
-           check_joint("place roll", config.place_id5_deg, kArmLimit);
+    if (!check_point("place release", target.release_x, target.release_y) ||
+        !check_point("place approach", target.approach_x, target.approach_y)) {
+        return false;
+    }
+    if (!check_joint("place pan", target.pan, kArmLimit) ||
+        !check_joint("place release shoulder", target.release_shoulder, kArmLimit) ||
+        !check_joint("place release elbow", target.release_elbow, kArmLimit) ||
+        !check_joint("place release wrist", target.release_wrist, kWristLimit) ||
+        !check_joint("place approach shoulder", target.approach_shoulder, kArmLimit) ||
+        !check_joint("place approach elbow", target.approach_elbow, kArmLimit) ||
+        !check_joint("place approach wrist", target.approach_wrist, kWristLimit) ||
+        !check_joint("place roll", config.place_id5_deg, kArmLimit)) {
+        return false;
+    }
+    // The release leg moves forward while descending. Check intermediate IK
+    // and wrist angles as well as its endpoints.
+    for (int i = 0; i <= 100; i++) {
+        const float t = i / 100.0f;
+        const float x = target.approach_x +
+                        t * (target.release_x - target.approach_x);
+        const float y = target.approach_y +
+                        t * (target.release_y - target.approach_y);
+        float shoulder = 0.0f;
+        float elbow = 0.0f;
+        solve_inverse_kinematics(x, y, shoulder, elbow);
+        const float wrist = target.approach_wrist +
+                            t * (target.release_wrist - target.approach_wrist);
+        if (!check_point("place approach path", x, y) ||
+            !check_joint("place path shoulder", shoulder, kArmLimit) ||
+            !check_joint("place path elbow", elbow, kArmLimit) ||
+            !check_joint("place path wrist", wrist, kWristLimit)) {
+            return false;
+        }
+
+        // SMOOTH_POSE interpolates the joint targets. Verify that its real
+        // end-effector curve neither dips below the release point nor sweeps
+        // farther forward than the two configured endpoints.
+        const float commanded_shoulder = target.approach_shoulder +
+            t * (target.release_shoulder - target.approach_shoulder);
+        const float commanded_elbow = target.approach_elbow +
+            t * (target.release_elbow - target.approach_elbow);
+        float actual_x = 0.0f;
+        float actual_y = 0.0f;
+        solve_forward_kinematics(commanded_shoulder, commanded_elbow,
+                                 actual_x, actual_y);
+        const float max_endpoint_x = std::max(target.approach_x,
+                                               target.release_x);
+        if (actual_y < target.release_y - 0.005f ||
+            actual_x > max_endpoint_x + 0.005f) {
+            std::ostringstream os;
+            os << "place joint path sweeps outside safe corridor at t="
+               << std::fixed << std::setprecision(2) << t;
+            error = os.str();
+            return false;
+        }
+    }
+    return true;
 }
 } // namespace
 
@@ -314,12 +366,9 @@ bool LeKiwiPickConfig::load(const std::string& path) {
         else if (key == "place_id4_deg") place_id4_deg = v;
         else if (key == "place_id5_deg") place_id5_deg = v;
         else if (key == "place_forward_offset_cm") place_forward_offset_cm = v;
-        else if (key == "place_lateral_offset_cm") place_lateral_offset_cm = v;
         else if (key == "place_height_offset_cm") place_height_offset_cm = v;
-        else if (key == "place_pitch_offset_deg") place_pitch_offset_deg = v;
-        else if (key == "place_hover_clearance_cm")
-            place_hover_clearance_cm = std::max(0.5f, v);
-        else if (key == "place_settle_ms") place_settle_ms = std::max(0, (int)v);
+        else if (key == "bucket_stop_size_px")
+            bucket_stop_size_px = std::max(1, (int)v);
         else if (key == "arm_speed_scale")
             arm_speed_scale = std::max(0.1f, std::min(1.0f, v));
         else if (key == "gripper_open_delta_deg") gripper_open_delta_deg = v;
@@ -412,14 +461,11 @@ bool LeKiwiPickConfig::save(const std::string& path) const {
     ofs << "place_id3_deg = " << place_id3_deg << "\n";
     ofs << "place_id4_deg = " << place_id4_deg << "\n";
     ofs << "place_id5_deg = " << place_id5_deg << "\n\n";
-    ofs << "# 放桶位置快速修正；方向与grab对应参数一致。\n";
+    ofs << "# 放桶位置只保留前后和高度修正，单位厘米。\n";
     ofs << "place_forward_offset_cm = " << place_forward_offset_cm << "\n";
-    ofs << "place_lateral_offset_cm = " << place_lateral_offset_cm << "\n";
     ofs << "place_height_offset_cm = " << place_height_offset_cm << "\n";
-    ofs << "place_pitch_offset_deg = " << place_pitch_offset_deg << "\n";
-    ofs << "# 打开夹爪前的垂直悬停高度，以及放球等待时间。\n";
-    ofs << "place_hover_clearance_cm = " << place_hover_clearance_cm << "\n";
-    ofs << "place_settle_ms = " << place_settle_ms << "\n\n";
+    ofs << "# 桶检测框较短边达到该像素值后停车；增大表示更靠近桶。\n";
+    ofs << "bucket_stop_size_px = " << bucket_stop_size_px << "\n\n";
     ofs << "# ID6夹爪开合量。保持现有力度时不要修改。\n";
     ofs << "gripper_open_delta_deg = " << gripper_open_delta_deg << "\n";
     ofs << "gripper_close_delta_deg = " << gripper_close_delta_deg << "\n\n";
@@ -446,6 +492,10 @@ bool LeKiwiPickConfig::save(const std::string& path) const {
 
 bool LeKiwiPickConfig::validate(std::string& error) const {
     error.clear();
+    if (bucket_stop_size_px < 50 || bucket_stop_size_px > 470) {
+        error = "bucket_stop_size_px must be in [50,470] for a 640x480 frame";
+        return false;
+    }
     const ResolvedGrabTarget grab = resolve_grab_target(*this);
     if (!validate_pick_target(*this, grab, error)) return false;
     const ResolvedPlaceTarget place = resolve_place_target(*this);
@@ -468,6 +518,7 @@ void LeKiwiMoveController::update_geometry(int frame_width, int frame_height) {
     target_cx_ = left_ + target_w_ / 2;
     target_position_ = std::max(target_w_, target_h_);
     if (config_.ball_stop_size_px > 0) target_position_ = config_.ball_stop_size_px;
+    bucket_target_position_ = std::max(1, config_.bucket_stop_size_px);
 }
 
 void LeKiwiMoveController::reset() {
@@ -576,11 +627,15 @@ LeKiwiMoveController::Command LeKiwiMoveController::control_target(const TargetB
             return diff_drive_cmd("BALL_BACKWARD", -12, -12);
         }
     } else {
-        if (position < (int)(target_position_ * 2.1f)) {
+        if (position < bucket_target_position_) {
             stable_count_ = 0;
-            return diff_drive_cmd("BUCKET_FORWARD", 25, 25);
+            const int speed = position * 10 >= bucket_target_position_ * 9
+                ? 12 : 25;
+            return diff_drive_cmd("BUCKET_FORWARD", speed, speed);
         }
-        if (position > target_position_ * 3) {
+        const int too_close_margin = std::max(30,
+                                              bucket_target_position_ / 5);
+        if (position > bucket_target_position_ + too_close_margin) {
             stable_count_ = 0;
             return diff_drive_cmd("BUCKET_BACKWARD", -12, -12);
         }
@@ -588,7 +643,9 @@ LeKiwiMoveController::Command LeKiwiMoveController::control_target(const TargetB
 
     stable_count_++;
     Command cmd = diff_drive_cmd(bucket ? "BUCKET_READY" : "BALL_READY", 0, 0);
-    cmd.reached = stable_count_ >= config_.ball_stable_frames;
+    constexpr int kBucketStableFrames = 2;
+    cmd.reached = stable_count_ >=
+        (bucket ? kBucketStableFrames : config_.ball_stable_frames);
     return cmd;
 }
 
@@ -636,11 +693,12 @@ std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
 
 std::vector<LeKiwiArmController::Step> LeKiwiArmController::put_sequence(
     const LeKiwiPickConfig& config) {
+    (void)config;
     return {
-        {Kind::SMOOTH_POSE, "place_hover", 30.0f, 300.0f},
-        {Kind::SMOOTH_POSE, "place_release", 16.0f, (float)config.place_settle_ms},
-        {Kind::SMOOTH_POSE, "release_gripper", 40.0f, (float)config.place_settle_ms},
-        {Kind::SMOOTH_POSE, "place_hover", 20.0f, 300.0f},
+        {Kind::SMOOTH_POSE, "place_approach", 30.0f, 300.0f},
+        {Kind::SMOOTH_POSE, "place_release", 16.0f, (float)kPlaceSettleMs},
+        {Kind::SMOOTH_POSE, "release_gripper", 40.0f, (float)kPlaceSettleMs},
+        {Kind::SMOOTH_POSE, "place_approach", 20.0f, 300.0f},
         {Kind::SMOOTH_POSE, "carry", 30.0f, (float)config.carry_settle_ms},
         {Kind::SMOOTH_POSE, "close_gripper", 40.0f, 100.0f},
     };
@@ -674,17 +732,17 @@ bool LeKiwiArmController::build_named_pose(const std::string& name,
         pose["arm_gripper"] = 10.0f;
         return true;
     }
-    if (name == "place_hover" || name == "place_release") {
+    if (name == "place_approach" || name == "place_release") {
         const ResolvedPlaceTarget target = resolve_place_target(config_);
-        const bool hover = name == "place_hover";
+        const bool approach = name == "place_approach";
         pose = {
             {"arm_shoulder_pan", target.pan},
-            {"arm_shoulder_lift", hover ? target.hover_shoulder
-                                         : target.release_shoulder},
-            {"arm_elbow_flex", hover ? target.hover_elbow
-                                      : target.release_elbow},
-            {"arm_wrist_flex", hover ? target.hover_wrist
-                                      : target.release_wrist},
+            {"arm_shoulder_lift", approach ? target.approach_shoulder
+                                            : target.release_shoulder},
+            {"arm_elbow_flex", approach ? target.approach_elbow
+                                         : target.release_elbow},
+            {"arm_wrist_flex", approach ? target.approach_wrist
+                                         : target.release_wrist},
             {"arm_wrist_roll", config_.place_id5_deg},
         };
         return true;
@@ -763,13 +821,13 @@ bool LeKiwiArmController::begin_put() {
     }
     fprintf(stderr,
             "[LeKiwiArmController] place ids=(%.1f,%.1f,%.1f,%.1f,%.1f) "
-            "offset_cm=(forward=%.1f,lateral=%.1f,height=%.1f) "
-            "resolved=(pan=%.1f,x=%.4f,release_y=%.4f,hover_y=%.4f)\n",
+            "offset_cm=(forward=%.1f,height=%.1f) "
+            "resolved=(pan=%.1f,approach=(%.4f,%.4f),release=(%.4f,%.4f))\n",
             config_.place_id1_deg, config_.place_id2_deg, config_.place_id3_deg,
             config_.place_id4_deg, config_.place_id5_deg,
-            config_.place_forward_offset_cm, config_.place_lateral_offset_cm,
-            config_.place_height_offset_cm, target.pan, target.x,
-            target.release_y, target.hover_y);
+            config_.place_forward_offset_cm, config_.place_height_offset_cm,
+            target.pan, target.approach_x, target.approach_y,
+            target.release_x, target.release_y);
     sequence_ = put_sequence(config_);
     active_ = true;
     return load_current_positions();
@@ -789,13 +847,13 @@ bool LeKiwiArmController::begin_stage(const std::string& stage) {
     } else if (stage == "carry") {
         sequence_ = {{Kind::SMOOTH_POSE, "carry", 30.0f,
                       (float)config_.carry_settle_ms}};
-    } else if (stage == "place-hover") {
-        sequence_ = {{Kind::SMOOTH_POSE, "place_hover", 30.0f, 300.0f}};
+    } else if (stage == "place-approach" || stage == "place-hover") {
+        sequence_ = {{Kind::SMOOTH_POSE, "place_approach", 30.0f, 300.0f}};
     } else if (stage == "place-release") {
         sequence_ = {
-            {Kind::SMOOTH_POSE, "place_hover", 30.0f, 300.0f},
+            {Kind::SMOOTH_POSE, "place_approach", 30.0f, 300.0f},
             {Kind::SMOOTH_POSE, "place_release", 16.0f,
-             (float)config_.place_settle_ms},
+             (float)kPlaceSettleMs},
         };
     } else if (stage == "place-cycle") {
         const ResolvedPlaceTarget target = resolve_place_target(config_);
@@ -1307,7 +1365,7 @@ bool LeKiwiArmController::step_reached(const Step& step) const {
         if (gripper_only) return max_error <= 12.0f;
 
         bool geometry_safe = true;
-        if (step.joint == "place_hover" || step.joint == "place_release") {
+        if (step.joint == "place_approach" || step.joint == "place_release") {
             auto shoulder = smooth_goal_targets_.find("arm_shoulder_lift");
             auto elbow = smooth_goal_targets_.find("arm_elbow_flex");
             if (shoulder == smooth_goal_targets_.end() ||
