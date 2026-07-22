@@ -334,6 +334,59 @@ attempt to claim already-claimed interface 1
 
 是否正常应以随后出现 `UvcCapture streaming 640x480 @ 30 fps` 为准。
 
+#### Linux 报 `uvc_open failed: Access denied`
+
+典型日志：
+
+```text
+[UvcCapture] uvc_open failed: Access denied
+[ERROR] Failed to open UVC device 0
+```
+
+这不是编译失败，也不是摄像头损坏。当前程序通过 libuvc 直接访问
+`/dev/bus/usb/<bus>/<device>`，需要对 usbfs 设备节点具有读写权限；即使
+`/dev/video0` 属于 `video` 组也不能代替该权限。
+
+旧机器人系统在 `/etc/udev/rules.d/99-dw-uvc-camera.rules` 中保存过摄像头专用
+规则。更换或重做 rootfs 后，该系统配置不会随 aka 源码自动恢复，因此可能重新出现
+权限错误。这是 Linux rootfs 配置，不需要修改用户态程序。
+
+在开发板原生 Linux 中恢复持久规则：
+
+```bash
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="0ac8", ATTR{idProduct}=="0346", MODE="0660", GROUP="plugdev"' \
+  | sudo tee /etc/udev/rules.d/99-dw-uvc-camera.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=usb --action=add
+sudo udevadm settle
+```
+
+拔插一次摄像头最可靠。重新执行 `lsusb` 获取可能变化的 bus/device 编号：
+
+```bash
+id
+lsusb | grep 0ac8:0346
+ls -l /dev/bus/usb/<bus>/<device>
+```
+
+通过标准：`orangepi` 属于 `plugdev`，对应节点权限类似：
+
+```text
+crw-rw---- root plugdev ... /dev/bus/usb/<bus>/<device>
+```
+
+然后重新运行 `./run_lekiwi_full.sh`，应出现 UVC streaming 日志。不要把
+`sudo ./run_lekiwi_full.sh` 当作长期方案。
+
+Linux 下 Feetech 的 `LIBUSB_ERROR_ACCESS` 后若继续打印：
+
+```text
+falling back to TTY /dev/ttyACM0
+opened TTY /dev/ttyACM0 baud=1000000
+```
+
+表示已正常使用 TTY 后端，与摄像头的致命 `uvc_open` 失败不是同一个问题。
+
 ### 6.8 状态机测试
 
 ```bash

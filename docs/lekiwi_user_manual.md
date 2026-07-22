@@ -409,6 +409,10 @@ done=1 failed=0
 
 底层 USB、编译、rootfs、StarryOS 或校准故障见调试手册。
 
+Linux 若提示 `uvc_open failed: Access denied`，说明 rootfs 缺少摄像头 usbfs 的
+udev 权限规则，不是机械臂或视觉程序故障。不要长期使用 `sudo` 启动完整流程，按
+调试手册第6.7节恢复 `/etc/udev/rules.d/99-dw-uvc-camera.rules`。
+
 ## 10. 推荐现场调试流程
 
 ```text
