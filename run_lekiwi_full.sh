@@ -15,6 +15,36 @@ is_starry() {
     [ "${OS_NAME}" = "Starry" ] || [ "${HOST_NAME}" = "starry" ] || [ ! -x "${SCRIPT_DIR}/build_rk3588.sh" ]
 }
 
+wait_for_starry_usb() {
+    is_starry || return 0
+
+    case "${FEETECH_DEV}" in
+        auto|usb|libusb|cdc) ;;
+        *) return 0 ;;
+    esac
+
+    timeout="${LEKIWI_USB_ENUM_TIMEOUT:-20}"
+    elapsed=0
+    while [ "${elapsed}" -lt "${timeout}" ]; do
+        # This flow needs the root hub, external hub, camera and Feetech CDC.
+        set -- /dev/bus/usb/*/*
+        if [ "$#" -ge 4 ] && [ -e "$4" ]; then
+            if [ "${elapsed}" -gt 0 ]; then
+                echo "USB devices ready after ${elapsed}s."
+            fi
+            return 0
+        fi
+        if [ "${elapsed}" -eq 0 ]; then
+            echo "Waiting for Starry USB enumeration (timeout ${timeout}s)..."
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    echo "ERROR: Starry USB enumeration did not expose the hub, camera and Feetech CDC within ${timeout}s." >&2
+    return 1
+}
+
 if is_starry && [ -z "${RKNN_CORE_MASK:-}" ]; then
     RKNN_CORE_MASK=0
     export RKNN_CORE_MASK
@@ -40,6 +70,8 @@ if is_starry; then
 else
     "${SCRIPT_DIR}/build_rk3588.sh" -b Release -l INFO
 fi
+
+wait_for_starry_usb
 
 echo "=== LeKiwi full pick-and-bucket flow ==="
 echo "  model       : ${MODEL_PATH}"
