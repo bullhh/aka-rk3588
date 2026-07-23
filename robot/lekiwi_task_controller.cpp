@@ -1367,19 +1367,20 @@ bool LeKiwiArmController::advance_step(const Step& step) {
     const bool still_progressing =
         step_hold_ticks_ - step_last_progress_tick_ < 40;
     if (!reached && step_hold_ticks_ >= timeout_ticks && !still_progressing) {
-        if (step.kind == Kind::MOVE_TO && step.joint == "clear" &&
-            gripper_contact_) {
-            // The ball did not reach the minimum safe lift height. Keep the
-            // base stopped, release it at the current low-speed arm pose, then
-            // return HOME instead of terminating with a loaded gripper.
+        if (step.kind == Kind::MOVE_TO && step.joint == "clear") {
+            // A failed clear is a failed pick, not a fatal controller error.
+            // Keep the base stopped, release any possible load at the current
+            // low-speed arm pose, then return HOME. The normal post-pick
+            // verification will continue with visual realignment/retry.
             sequence_.resize(step_index_ + 1);
             sequence_.push_back(
                 {Kind::SMOOTH_POSE, "release_gripper", 40.0f, 300.0f});
             sequence_.push_back(
                 {Kind::HOME, "home", config_.home_x, config_.home_y});
             fprintf(stderr,
-                    "[LeKiwiArmController] clear stalled before safe height; "
-                    "releasing ball and recovering HOME\n");
+                    "[LeKiwiArmController] clear stalled (contact=%s); "
+                    "treating as failed pick, releasing and recovering HOME\n",
+                    gripper_contact_ ? "yes" : "no");
             return true;
         }
         std::ostringstream error;

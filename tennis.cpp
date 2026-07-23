@@ -547,9 +547,9 @@ int main(int argc, char** argv)
     }
 
     dup2(g_saved_stderr, STDERR_FILENO);
-    LOGI("Warming up camera (skip 20 frames)...");
+    LOGI("Warming up camera (skip 10 frames)...");
     dup2(g_devnull, STDERR_FILENO);
-    for (int i = 0; i < 20; i++) capture.getFrame(mjpeg_buf, MJPEG_BUF, 500);
+    for (int i = 0; i < 10; i++) capture.getFrame(mjpeg_buf, MJPEG_BUF, 500);
 
     int  frame_idx    = 0;
     int  proc_cnt     = 0;
