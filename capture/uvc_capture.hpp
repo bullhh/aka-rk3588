@@ -3,7 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
-#include <pthread.h>
+#include <atomic>
 
 #include <libuvc/libuvc.h>
 
@@ -13,6 +13,10 @@
 // with raw MJPEG bytes.  Call close() when done.
 class UvcCapture {
 public:
+    struct Stats {
+        uint64_t captured_frames = 0;
+    };
+
     UvcCapture();
     ~UvcCapture();
 
@@ -31,32 +35,26 @@ public:
     // Block until the next frame arrives (or timeout_ms elapses).
     // Copies MJPEG data into buf (capacity cap).
     // Returns number of bytes written, or -1 on error/timeout.
-    int getFrame(uint8_t* buf, size_t cap, int timeout_ms = 200);
+    int getFrame(uint8_t* buf, size_t cap, int timeout_ms = 200,
+                 long* wait_us = nullptr, long* copy_us = nullptr);
+
+    Stats stats() const;
 
     int width()  const { return width_;  }
     int height() const { return height_; }
 
 private:
-    // Called by libuvc from its internal thread
-    static void frame_cb(uvc_frame_t* frame, void* ptr);
-    void on_frame(uvc_frame_t* frame);
-
     uvc_context_t*       ctx_  = nullptr;
     uvc_device_handle_t* devh_ = nullptr;
+    uvc_stream_handle_t* strmh_ = nullptr;
     uvc_stream_ctrl_t    ctrl_ = {};
 
     int width_  = 640;
     int height_ = 480;
 
-    // Single-slot frame ring: libuvc thread writes, getFrame() reads.
-    pthread_mutex_t mutex_;
-    pthread_cond_t  cond_;
-
-    uint8_t* pending_data_ = nullptr;
-    size_t   pending_len_  = 0;
-    size_t   pending_cap_  = 0;
-    bool     has_pending_  = false;
     bool     streaming_ = false;
+
+    std::atomic<uint64_t> captured_frames_{0};
 };
 
 #endif // UVC_CAPTURE_HPP

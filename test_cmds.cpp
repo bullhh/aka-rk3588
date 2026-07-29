@@ -256,6 +256,80 @@ int cmd_test_uvc(int uvc_index)
     if (capture.open(uvc_index, FRAME_WIDTH, FRAME_HEIGHT, 30) != 0) {
         LOGE("Failed to open UVC device %d", uvc_index); return 1;
     }
+
+    const char* bench_env = getenv("AKA_UVC_BENCH_SECONDS");
+    const int bench_seconds = bench_env ? atoi(bench_env) : 0;
+    if (bench_seconds > 0) {
+        const size_t BUF = 1024 * 1024;
+        uint8_t* buf = (uint8_t*)malloc(BUF);
+        if (!buf) { capture.close(); return 1; }
+
+        for (int i = 0; i < 10; i++) capture.getFrame(buf, BUF, 500);
+        if (getenv("AKA_UVC_BENCH_RESUME")) {
+            printf("[UVC-BENCH] pause/resume test\n");
+            capture.pause();
+            const char* pause_env = getenv("AKA_UVC_BENCH_PAUSE_SECONDS");
+            const int pause_seconds = pause_env ? atoi(pause_env) : 1;
+            sleep(pause_seconds > 0 ? pause_seconds : 1);
+            if (capture.resume() != 0) {
+                free(buf);
+                capture.close();
+                return 1;
+            }
+        }
+        UvcCapture::Stats start_stats = capture.stats();
+        UvcCapture::Stats window_stats = start_stats;
+        struct timeval start{}, window_start{};
+        gettimeofday(&start, nullptr);
+        window_start = start;
+        uint64_t consumed = 0;
+        uint64_t window_consumed = 0;
+        uint64_t consumed_bytes = 0;
+        uint64_t window_consumed_bytes = 0;
+
+        while (_elapsed_us(start) < bench_seconds * 1000000L) {
+            const int frame_len = capture.getFrame(buf, BUF, 500);
+            if (frame_len > 0) {
+                consumed++;
+                window_consumed++;
+                consumed_bytes += static_cast<uint64_t>(frame_len);
+                window_consumed_bytes += static_cast<uint64_t>(frame_len);
+            }
+            const long window_us = _elapsed_us(window_start);
+            if (window_us >= 10000000L) {
+                UvcCapture::Stats now = capture.stats();
+                const uint64_t captured = now.captured_frames - window_stats.captured_frames;
+                const double seconds = window_us / 1000000.0;
+                printf("[UVC-BENCH] window=%.2fs captured=%llu consumed=%llu camera=%.2ffps consumed=%.2ffps avg_frame=%.1fKiB\n",
+                       seconds,
+                       static_cast<unsigned long long>(captured),
+                       static_cast<unsigned long long>(window_consumed),
+                       captured / seconds, window_consumed / seconds,
+                       window_consumed ? window_consumed_bytes /
+                                             static_cast<double>(window_consumed) / 1024.0 : 0.0);
+                fflush(stdout);
+                window_stats = now;
+                window_consumed = 0;
+                window_consumed_bytes = 0;
+                gettimeofday(&window_start, nullptr);
+            }
+        }
+
+        const long total_us = _elapsed_us(start);
+        UvcCapture::Stats end_stats = capture.stats();
+        const uint64_t captured = end_stats.captured_frames - start_stats.captured_frames;
+        printf("[UVC-BENCH] total=%.2fs captured=%llu consumed=%llu camera=%.2ffps consumed=%.2ffps avg_frame=%.1fKiB\n",
+               total_us / 1000000.0,
+               static_cast<unsigned long long>(captured),
+               static_cast<unsigned long long>(consumed),
+               captured * 1000000.0 / total_us,
+               consumed * 1000000.0 / total_us,
+               consumed ? consumed_bytes / static_cast<double>(consumed) / 1024.0 : 0.0);
+        free(buf);
+        capture.close();
+        return 0;
+    }
+
     LOGI("Camera opened (%dx%d), warming up 20 frames...", FRAME_WIDTH, FRAME_HEIGHT);
     const size_t BUF = 1024 * 1024;
     uint8_t* buf = (uint8_t*)malloc(BUF);

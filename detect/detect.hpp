@@ -35,7 +35,8 @@ void detect_deinit(rknn_app_context_t* ctx);
 // Run YOLOv8 inference on an RGB888 image already letterboxed to model_w×model_h.
 // pad_x, pad_y, lbox_scale: letterbox parameters from decode_mjpeg,
 //   used to map bbox coords back to original camera frame (orig_w × orig_h).
-// Timing outputs (optional, pass nullptr to skip): t_input, t_run, t_output, t_post
+// Timing outputs (optional, pass nullptr to skip):
+// t_input, t_run, t_output, t_post, t_release
 // Returns number of detections.
 int detect_run(rknn_app_context_t* ctx,
                const uint8_t* rgb_data, int model_w, int model_h,
@@ -44,6 +45,7 @@ int detect_run(rknn_app_context_t* ctx,
                float conf_thresh, float iou_thresh,
                std::vector<detection>& dets,
                long* t_input = nullptr, long* t_run = nullptr,
-               long* t_output = nullptr, long* t_post = nullptr);
+               long* t_output = nullptr, long* t_post = nullptr,
+               long* t_release = nullptr);
 
 #endif // DETECT_HPP

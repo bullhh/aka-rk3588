@@ -63,14 +63,16 @@ void detect_deinit(rknn_app_context_t* ctx)
 // pad_x/y  : pixel offset added during letterbox.
 // lbox_scale: scale factor (original → model).
 // Outputs bbox in original camera frame (orig_w × orig_h), cx/cy center format.
-// Timing outputs (optional, pass nullptr to skip): t_input, t_run, t_output, t_post
+// Timing outputs (optional, pass nullptr to skip):
+// t_input, t_run, t_output, t_post, t_release
 int detect_run(rknn_app_context_t* ctx,
                const uint8_t* rgb_data, int model_w, int model_h,
                int orig_w, int orig_h,
                int pad_x, int pad_y, float lbox_scale,
                float conf_thresh, float iou_thresh,
                std::vector<detection>& dets,
-               long* t_input, long* t_run, long* t_output, long* t_post)
+               long* t_input, long* t_run, long* t_output, long* t_post,
+               long* t_release)
 {
     struct timeval t_start, t_stage;
     gettimeofday(&t_start, nullptr);
@@ -205,7 +207,7 @@ int detect_run(rknn_app_context_t* ctx,
     // 7. Release
     gettimeofday(&t_stage, nullptr);
     rknn_outputs_release(ctx->rknn_ctx, n_out, outputs);
-    long t_release = elapsed_us(t_stage);
+    long t_release_us = elapsed_us(t_stage);
 
     long t_total = elapsed_us(t_start);
 
@@ -214,6 +216,7 @@ int detect_run(rknn_app_context_t* ctx,
     if (t_run)    *t_run    = t_run_us;
     if (t_output) *t_output = t_output_us;
     if (t_post)   *t_post   = t_post_us;
+    if (t_release) *t_release = t_release_us;
 
     // Print timing breakdown - always print for debugging
     // printf("[detect] total=%.1fms  in=%.1f run=%.1f out=%.1f post=%.1f rel=%.1f  cands=%d nms=%d\n",
@@ -222,7 +225,7 @@ int detect_run(rknn_app_context_t* ctx,
     //         t_run_us / 1000.0f,
     //         t_output_us / 1000.0f,
     //         t_post_us / 1000.0f,
-    //         t_release / 1000.0f,
+    //         t_release_us / 1000.0f,
     //         (int)cands.size(), (int)dets.size());
     fflush(stdout);
 

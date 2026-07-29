@@ -1,0 +1,73 @@
+# StarryOS Warn 级别实机串口关键日志摘录
+# 日期：2026-07-28
+# 说明：以下仅保留用户态程序的闭环事件和 PERF 行，数值逐行来自本次串口采集。
+# 原始 tee 文件在 StarryOS 重启前未完成 ext4 数据落盘，因此不将空文件冒充原始日志。
+
+[INFO]  Performance window=10s; state log interval=1000ms
+[STATE] LEKIWI_CHASE label=BALL_LEFT area=0.047 off=-103 size=122 L=-12 R= 12 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.047 off=-75 size=122 L= -8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.045 off=-28 size=117 L= 35 R= 35 ready=0
+[STATE] LEKIWI_CHASE label=BALL_READY area=0.067 off= -4 size=154 L=  0 R=  0 ready=1
+[GAME] -> PICK_BALL attempt=1/10
+[GAME] PICK_BALL step=1/11 home
+[GAME] PICK_BALL step=2/11 joint_target
+[GAME] PICK_BALL step=3/11 joint_delta
+[GAME] PICK_BALL step=4/11 joint_target
+[GAME] PICK_BALL step=5/11 pre_grab
+[GAME] PICK_BALL step=6/11 grab
+[GAME] PICK_BALL step=7/11 gap
+[GAME] PICK_BALL step=8/11 joint_delta
+[GAME] PICK_BALL step=9/11 gap
+[GAME] PICK_BALL step=10/11 clear
+[GAME] PICK_BALL step=11/11 carry
+[GAME] PICK_BALL step=12/11 done
+[GAME] PICK_BALL done gripper=47.9 gripper_hold=yes ball_visible=no area=0.000 off=0 size=0 label=IDLE holding=yes post_fps=6.6
+[GAME] -> FIND_BUCKET
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_READY cx=333 off=13 tol=20 size=391/362 target=360 L=0 R=0 stable=1
+[GAME] -> PUT_BALL
+[GAME] PUT_BALL step=1/6 place_approach
+[GAME] PUT_BALL step=2/6 place_release
+[GAME] PUT_BALL step=3/6 release_gripper
+[GAME] PUT_BALL step=4/6 place_approach
+[GAME] PUT_BALL step=5/6 carry
+[GAME] PUT_BALL step=6/6 close_gripper
+[GAME] PUT_BALL step=7/6 done
+[GAME] PUT_BALL done -> CHASE_BALL
+
+# 闭环后的九个连续稳态视觉窗口
+[PERF] window=10.11s captured=77 processed=64 overwritten=14 camera=7.62fps effective=6.33fps busy=9.24fps
+[PERF] frame_ms avg=157.94 p50=138.04 p95=248.69 max=398.87 uvc_cb_copy=2.755
+[PERF] stage_ms wait=49.73 capture_copy=0.748 jpeg_header=0.047 jpeg_decode=8.29 letterbox_copy=0.313
+[PERF] stage_ms input=0.59 run=87.22 output=0.27 post=0.079 release=0.016 control=2.143 unaccounted=8.50
+[PERF] window=10.14s captured=78 processed=63 overwritten=14 camera=7.70fps effective=6.22fps busy=9.06fps
+[PERF] frame_ms avg=160.86 p50=137.42 p95=248.57 max=341.38 uvc_cb_copy=4.463
+[PERF] stage_ms wait=50.48 capture_copy=1.649 jpeg_header=0.048 jpeg_decode=8.30 letterbox_copy=0.316
+[PERF] stage_ms input=0.58 run=89.53 output=0.27 post=0.079 release=0.016 control=0.467 unaccounted=9.13
+[PERF] window=10.07s captured=82 processed=64 overwritten=19 camera=8.14fps effective=6.35fps busy=9.01fps
+[PERF] frame_ms avg=157.33 p50=129.72 p95=276.55 max=440.94 uvc_cb_copy=4.172
+[PERF] stage_ms wait=46.37 capture_copy=3.235 jpeg_header=0.755 jpeg_decode=8.31 letterbox_copy=0.314
+[PERF] stage_ms input=0.58 run=87.50 output=0.44 post=0.079 release=0.017 control=1.449 unaccounted=8.29
+[PERF] window=10.15s captured=78 processed=64 overwritten=13 camera=7.69fps effective=6.31fps busy=9.07fps
+[PERF] frame_ms avg=158.53 p50=135.48 p95=252.81 max=298.36 uvc_cb_copy=3.940
+[PERF] stage_ms wait=48.22 capture_copy=0.816 jpeg_header=0.792 jpeg_decode=8.31 letterbox_copy=0.316
+[PERF] stage_ms input=0.59 run=89.28 output=0.26 post=0.220 release=0.017 control=0.713 unaccounted=9.00
+[PERF] window=10.10s captured=81 processed=65 overwritten=15 camera=8.02fps effective=6.44fps busy=9.36fps
+[PERF] frame_ms avg=151.30 p50=133.38 p95=244.11 max=333.51 uvc_cb_copy=1.966
+[PERF] stage_ms wait=44.48 capture_copy=0.824 jpeg_header=0.048 jpeg_decode=8.30 letterbox_copy=0.321
+[PERF] stage_ms input=0.58 run=88.33 output=0.61 post=0.082 release=0.017 control=1.511 unaccounted=6.19
+[PERF] window=10.04s captured=81 processed=64 overwritten=17 camera=8.06fps effective=6.37fps busy=8.84fps
+[PERF] frame_ms avg=156.91 p50=131.90 p95=248.36 max=398.25 uvc_cb_copy=5.234
+[PERF] stage_ms wait=43.84 capture_copy=2.383 jpeg_header=0.769 jpeg_decode=8.29 letterbox_copy=0.318
+[PERF] stage_ms input=0.59 run=87.92 output=0.36 post=0.171 release=0.017 control=4.626 unaccounted=7.63
+[PERF] window=10.10s captured=82 processed=64 overwritten=18 camera=8.12fps effective=6.34fps busy=9.15fps
+[PERF] frame_ms avg=157.71 p50=129.89 p95=282.34 max=431.44 uvc_cb_copy=4.352
+[PERF] stage_ms wait=48.42 capture_copy=2.450 jpeg_header=0.755 jpeg_decode=8.28 letterbox_copy=0.315
+[PERF] stage_ms input=0.59 run=88.40 output=0.27 post=0.079 release=0.016 control=1.356 unaccounted=6.78
+[PERF] window=10.24s captured=77 processed=65 overwritten=12 camera=7.52fps effective=6.35fps busy=9.22fps
+[PERF] frame_ms avg=157.56 p50=137.76 p95=257.37 max=298.13 uvc_cb_copy=2.593
+[PERF] stage_ms wait=49.12 capture_copy=0.804 jpeg_header=0.049 jpeg_decode=8.28 letterbox_copy=0.312
+[PERF] stage_ms input=0.59 run=88.32 output=0.61 post=0.079 release=0.017 control=1.353 unaccounted=8.03
+[PERF] window=10.06s captured=77 processed=62 overwritten=15 camera=7.65fps effective=6.16fps busy=8.96fps
+[PERF] frame_ms avg=162.28 p50=136.14 p95=296.62 max=434.05 uvc_cb_copy=2.776
+[PERF] stage_ms wait=50.68 capture_copy=3.339 jpeg_header=0.051 jpeg_decode=8.30 letterbox_copy=0.316
+[PERF] stage_ms input=0.58 run=87.67 output=0.26 post=0.334 release=0.017 control=0.461 unaccounted=10.26

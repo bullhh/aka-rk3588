@@ -1,0 +1,179 @@
+[FeetechBus] auto backend: trying userspace libusb CDC first
+[FeetechBus] libusb initialized
+[FeetechBus] libusb device count=12
+[FeetechBus] device[0] bus=2 addr=2 vid=05e3 pid=0620 class=09/00/03 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[1] bus=2 addr=1 vid=1d6b pid=0003 class=09/00/03 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[2] bus=1 addr=4 vid=1a86 pid=55d3 class=02/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=02/02/01 eps=1
+[FeetechBus]     candidate control interface=0
+[FeetechBus]   iface=1 alt=0 class=0a/00/00 eps=2
+[FeetechBus]     ep=0x02 attr=0x02 max=32
+[FeetechBus]     ep=0x82 attr=0x02 max=64
+[FeetechBus]     candidate data interface=1 ep_in=0x82 ep_out=0x02
+[FeetechBus] libusb_open bus=1 addr=4 failed: LIBUSB_ERROR_ACCESS
+[FeetechBus] device[3] bus=1 addr=3 vid=0ac8 pid=0346 class=ef/02/01 configs=1
+[FeetechBus]   iface=0 alt=0 class=0e/01/00 eps=1
+[FeetechBus]   iface=1 alt=0 class=0e/02/00 eps=0
+[FeetechBus]   iface=1 alt=1 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=2 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=3 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=4 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=5 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=6 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=7 class=0e/02/00 eps=1
+[FeetechBus]   iface=2 alt=0 class=01/01/00 eps=0
+[FeetechBus]   iface=3 alt=0 class=01/02/00 eps=0
+[FeetechBus]   iface=3 alt=1 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=2 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=3 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=4 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=5 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=6 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=7 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=8 class=01/02/00 eps=1
+[FeetechBus] device[4] bus=1 addr=2 vid=05e3 pid=0610 class=09/00/02 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/01 eps=1
+[FeetechBus]   iface=0 alt=1 class=09/00/02 eps=1
+[FeetechBus] device[5] bus=1 addr=1 vid=1d6b pid=0002 class=09/00/01 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[6] bus=8 addr=1 vid=1d6b pid=0003 class=09/00/03 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[7] bus=7 addr=1 vid=1d6b pid=0002 class=09/00/01 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[8] bus=6 addr=1 vid=1d6b pid=0001 class=09/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[9] bus=5 addr=1 vid=1d6b pid=0002 class=09/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[10] bus=4 addr=1 vid=1d6b pid=0001 class=09/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[11] bus=3 addr=1 vid=1d6b pid=0002 class=09/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] libusb_open bus=1 addr=4 failed: LIBUSB_ERROR_ACCESS
+[FeetechBus] auto backend: libusb CDC unavailable: libusb_open bus=1 addr=4 failed: LIBUSB_ERROR_ACCESS
+[FeetechBus] auto backend: falling back to TTY /dev/ttyACM0
+[FeetechBus] opened TTY /dev/ttyACM0 baud=1000000
+[FeetechArm] torque enabled at current positions; no startup jump
+[32m[INFO]  Returning LeKiwi arm to HOME at limited speed[0m
+[FeetechArm] slow move: arm<=25.0 deg/s gripper<=40.0 deg/s
+[FeetechArm] slow move complete in 4.05 s
+[32m[INFO]  LeKiwi platform initialized (Feetech auto)[0m
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+attempt to claim already-claimed interface 1
+[UvcCapture] streaming 640x480 @ 30 fps
+[32m[INFO]  Camera opened (640x480)[0m
+[NPU] Using core mask RKNN_NPU_CORE_0_1_2
+model input num: 1, output num: 2
+input tensors:
+  index=0, name=images, n_dims=4, dims=[1, 640, 640, 3], n_elems=1228800, size=1228800, fmt=NHWC, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003922
+output tensors:
+  index=0, name=boxes_raw, n_dims=3, dims=[1, 4, 8400, 0], n_elems=33600, size=33600, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-120, scale=2.615338
+  index=1, name=scores_raw, n_dims=3, dims=[1, 1, 8400, 0], n_elems=8400, size=8400, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003878
+model is NHWC input fmt
+model input height=640, width=640, channel=3
+[detect] model loaded  w=640 h=640 ch=3  n_out=2
+[detect]   out[0] dims=[1,4,8400,0] type=INT8
+[detect]   out[1] dims=[1,1,8400,0] type=INT8
+[32m[INFO]  Model input 640x640[0m
+[32m[INFO]  Warming up camera (skip 10 frames)...[0m
+[32m[INFO]  Performance window=10s; state log interval=1000ms[0m
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.053 off=  9 size=133 L=  8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.051 off= -1 size=128 L=  8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.058 off=  9 size=133 L=  8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.060 off=  9 size=138 L=  8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.065 off=  4 size=143 L=  8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_READY area=0.072 off= -4 size=154 L=  0 R=  0 ready=0
+[STATE] LEKIWI_CHASE label=BALL_READY area=0.072 off= -4 size=154 L=  0 R=  0 ready=1
+[GAME] -> PICK_BALL attempt=1/10
+[UvcCapture] paused before PICK_BALL in 44.9 ms
+[GAME] PICK_BALL start catch sequence attempt=1/10 retry_offset_cm=(0.0, 0.0) total_offset_cm=(-0.5, -0.5, -1.0)
+[GAME] PICK_BALL step=1/11 home
+[GAME] PICK_BALL step=2/11 joint_target
+[GAME] PICK_BALL step=3/11 joint_delta
+[GAME] PICK_BALL step=4/11 joint_target
+[GAME] PICK_BALL step=5/11 pre_grab
+[GAME] PICK_BALL step=6/11 grab
+[GAME] PICK_BALL step=7/11 gap
+[GAME] PICK_BALL step=8/11 joint_delta
+[GAME] PICK_BALL step=9/11 gap
+[GAME] PICK_BALL step=10/11 clear
+[GAME] PICK_BALL step=11/11 carry
+[GAME] PICK_BALL step=12/11 done
+[UvcCapture] resumed after PICK_BALL in 157.7 ms
+[GAME] PICK_BALL done gripper=48.4 gripper_hold=yes ball_visible=no area=0.000 off=0 size=0 label=IDLE holding=yes post_fps=20.2
+[GAME] -> FIND_BUCKET
+[PERF] window=21.00s captured=146 processed=119 overwritten=25 camera=6.95fps effective=5.67fps busy=5.71fps
+[PERF] frame_ms avg=176.45 p50=39.42 p95=52.12 max=16183.84 uvc_cb_copy=0.009
+[PERF] stage_ms wait=1.31 capture_copy=0.006 jpeg_header=0.016 jpeg_decode=2.77 letterbox_copy=0.121
+[PERF] stage_ms input=0.21 run=37.15 output=0.09 post=0.017 release=0.001 control=0.108 unaccounted=134.65
+[GAME] LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH cx=0 off=-320 tol=20 size=0/0 target=360 L=12 R=-12 stable=0
+[GAME] LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH cx=0 off=-320 tol=20 size=0/0 target=360 L=12 R=-12 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_RIGHT cx=628 off=308 tol=20 size=23/65 target=360 L=30 R=-30 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_RIGHT cx=557 off=237 tol=20 size=165/352 target=360 L=30 R=-30 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_RIGHT cx=474 off=154 tol=20 size=317/336 target=360 L=30 R=-30 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FINE_RIGHT cx=395 off=75 tol=20 size=297/331 target=360 L=8 R=-8 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FINE_RIGHT cx=351 off=31 tol=20 size=294/331 target=360 L=8 R=-8 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=339 off=19 tol=20 size=294/331 target=360 L=25 R=25 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=333 off=13 tol=20 size=314/336 target=360 L=25 R=25 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=331 off=11 tol=20 size=333/343 target=360 L=12 R=12 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=331 off=11 tol=20 size=347/348 target=360 L=12 R=12 stable=0
+[PERF] window=10.04s captured=301 processed=302 overwritten=0 camera=29.99fps effective=30.09fps busy=53.94fps
+[PERF] frame_ms avg=33.24 p50=34.33 p95=49.23 max=52.99 uvc_cb_copy=0.006
+[PERF] stage_ms wait=14.70 capture_copy=0.008 jpeg_header=0.021 jpeg_decode=11.78 letterbox_copy=0.337
+[PERF] stage_ms input=0.00 run=0.00 output=0.00 post=0.000 release=0.000 control=0.000 unaccounted=6.39
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=332 off=12 tol=20 size=362/352 target=360 L=12 R=12 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=330 off=10 tol=20 size=378/357 target=360 L=12 R=12 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_READY cx=329 off=9 tol=20 size=384/360 target=360 L=0 R=0 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_READY cx=328 off=8 tol=20 size=385/360 target=360 L=0 R=0 stable=1
+[GAME] -> PUT_BALL
+[UvcCapture] paused before PUT_BALL in 32.6 ms
+[GAME] PUT_BALL start safe S-curve place sequence
+[GAME] PUT_BALL step=1/6 place_approach
+[GAME] PUT_BALL step=2/6 place_release
+[GAME] PUT_BALL step=3/6 release_gripper
+[GAME] PUT_BALL step=4/6 place_approach
+[GAME] PUT_BALL step=5/6 carry
+[GAME] PUT_BALL step=6/6 close_gripper
+[GAME] PUT_BALL step=7/6 done
+[UvcCapture] resumed after PUT_BALL in 180.7 ms
+[GAME] PUT_BALL done -> CHASE_BALL
+[PERF] window=17.74s captured=55 processed=55 overwritten=0 camera=3.10fps effective=3.10fps busy=3.24fps
+[PERF] frame_ms avg=322.54 p50=36.28 p95=49.37 max=15943.50 uvc_cb_copy=0.005
+[PERF] stage_ms wait=14.04 capture_copy=0.008 jpeg_header=0.020 jpeg_decode=10.91 letterbox_copy=0.336
+[PERF] stage_ms input=0.00 run=0.00 output=0.00 post=0.000 release=0.000 control=0.000 unaccounted=297.22
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[PERF] window=10.01s captured=297 processed=263 overwritten=33 camera=29.68fps effective=26.29fps busy=26.57fps
+[PERF] frame_ms avg=38.04 p50=37.20 p95=37.32 max=196.42 uvc_cb_copy=0.005
+[PERF] stage_ms wait=0.40 capture_copy=0.006 jpeg_header=0.016 jpeg_decode=3.74 letterbox_copy=0.129
+[PERF] stage_ms input=0.30 run=33.09 output=0.12 post=0.029 release=0.001 control=0.118 unaccounted=0.08
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[PERF] window=10.02s captured=301 processed=264 overwritten=37 camera=30.05fps effective=26.36fps busy=26.36fps
+[PERF] frame_ms avg=37.94 p50=37.22 p95=41.39 max=55.14 uvc_cb_copy=0.005
+[PERF] stage_ms wait=0.00 capture_copy=0.005 jpeg_header=0.014 jpeg_decode=3.20 letterbox_copy=0.121
+[PERF] stage_ms input=0.25 run=34.02 output=0.11 post=0.023 release=0.001 control=0.113 unaccounted=0.08
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0

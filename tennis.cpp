@@ -17,6 +17,8 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <algorithm>
+#include <cinttypes>
+#include <limits>
 #include <string>
 #include <vector>
 #include <utility>
@@ -159,6 +161,185 @@ static bool env_bool(const char* name, bool default_value) {
     if (!value || !value[0]) return default_value;
     return strcmp(value, "0") != 0 && strcmp(value, "false") != 0;
 }
+
+static int env_nonnegative_int(const char* name, int default_value) {
+    const char* value = getenv(name);
+    if (!value || !value[0]) return default_value;
+    char* end = nullptr;
+    long parsed = strtol(value, &end, 10);
+    if (!end || *end != '\0' || parsed < 0 || parsed > 3600000L) {
+        LOGW("Ignoring invalid %s=%s; using %d", name, value, default_value);
+        return default_value;
+    }
+    return static_cast<int>(parsed);
+}
+
+static uint64_t monotonic_us_now() {
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1000000ULL +
+           static_cast<uint64_t>(ts.tv_nsec) / 1000ULL;
+}
+
+struct PerfSample {
+    uint64_t total_us = 0;
+    uint64_t capture_wait_us = 0;
+    uint64_t capture_copy_us = 0;
+    uint64_t jpeg_header_us = 0;
+    uint64_t jpeg_decode_us = 0;
+    uint64_t letterbox_copy_us = 0;
+    uint64_t rknn_input_us = 0;
+    uint64_t rknn_run_us = 0;
+    uint64_t rknn_output_us = 0;
+    uint64_t postprocess_us = 0;
+    uint64_t rknn_release_us = 0;
+    uint64_t control_us = 0;
+};
+
+class PerfWindow {
+public:
+    explicit PerfWindow(uint64_t window_us) : window_us_(window_us) {}
+
+    void reset(const UvcCapture::Stats& capture_stats) {
+        start_us_ = monotonic_us_now();
+        capture_start_ = capture_stats;
+        samples_.clear();
+        totals_ = PerfSample{};
+        initialized_ = true;
+    }
+
+    void record(const PerfSample& sample) {
+        samples_.push_back(sample.total_us);
+        totals_.total_us += sample.total_us;
+        totals_.capture_wait_us += sample.capture_wait_us;
+        totals_.capture_copy_us += sample.capture_copy_us;
+        totals_.jpeg_header_us += sample.jpeg_header_us;
+        totals_.jpeg_decode_us += sample.jpeg_decode_us;
+        totals_.letterbox_copy_us += sample.letterbox_copy_us;
+        totals_.rknn_input_us += sample.rknn_input_us;
+        totals_.rknn_run_us += sample.rknn_run_us;
+        totals_.rknn_output_us += sample.rknn_output_us;
+        totals_.postprocess_us += sample.postprocess_us;
+        totals_.rknn_release_us += sample.rknn_release_us;
+        totals_.control_us += sample.control_us;
+    }
+
+    void maybe_report(const UvcCapture::Stats& capture_stats, bool force = false) {
+        if (!initialized_) {
+            reset(capture_stats);
+            return;
+        }
+        const uint64_t now_us = monotonic_us_now();
+        const uint64_t elapsed = now_us - start_us_;
+        if (!force && elapsed < window_us_) return;
+        if (elapsed == 0) return;
+
+        const uint64_t processed = samples_.size();
+        const uint64_t captured = capture_stats.captured_frames -
+                                  capture_start_.captured_frames;
+        const double elapsed_s = elapsed / 1000000.0;
+        const double camera_fps = captured / elapsed_s;
+        const double effective_fps = processed / elapsed_s;
+        uint64_t busy_us = totals_.total_us > totals_.capture_wait_us
+                         ? totals_.total_us - totals_.capture_wait_us : 0;
+        const double busy_fps = busy_us > 0
+                              ? processed * 1000000.0 / busy_us : 0.0;
+
+        uint64_t p50 = 0, p95 = 0, maximum = 0;
+        if (!samples_.empty()) {
+            std::vector<uint64_t> sorted = samples_;
+            std::sort(sorted.begin(), sorted.end());
+            p50 = sorted[(sorted.size() - 1) * 50 / 100];
+            p95 = sorted[(sorted.size() - 1) * 95 / 100];
+            maximum = sorted.back();
+        }
+
+        const double count = processed > 0 ? static_cast<double>(processed) : 1.0;
+        const uint64_t measured_us = totals_.capture_wait_us + totals_.capture_copy_us +
+            totals_.jpeg_header_us + totals_.jpeg_decode_us +
+            totals_.letterbox_copy_us + totals_.rknn_input_us +
+            totals_.rknn_run_us + totals_.rknn_output_us +
+            totals_.postprocess_us + totals_.rknn_release_us + totals_.control_us;
+        const double unaccounted_ms = processed > 0 && totals_.total_us > measured_us
+                                    ? (totals_.total_us - measured_us) / count / 1000.0
+                                    : 0.0;
+
+        printf("[PERF] window=%.2fs captured=%" PRIu64 " processed=%" PRIu64
+               " camera=%.2ffps effective=%.2ffps busy=%.2ffps\n",
+               elapsed_s, captured, processed,
+               camera_fps, effective_fps, busy_fps);
+        printf("[PERF] frame_ms avg=%.2f p50=%.2f p95=%.2f max=%.2f\n",
+               totals_.total_us / count / 1000.0,
+               p50 / 1000.0, p95 / 1000.0, maximum / 1000.0);
+        printf("[PERF] stage_ms wait=%.2f capture_copy=%.3f jpeg_header=%.3f"
+               " jpeg_decode=%.2f letterbox_copy=%.3f\n",
+               totals_.capture_wait_us / count / 1000.0,
+               totals_.capture_copy_us / count / 1000.0,
+               totals_.jpeg_header_us / count / 1000.0,
+               totals_.jpeg_decode_us / count / 1000.0,
+               totals_.letterbox_copy_us / count / 1000.0);
+        printf("[PERF] stage_ms input=%.2f run=%.2f output=%.2f post=%.3f"
+               " release=%.3f control=%.3f unaccounted=%.2f\n",
+               totals_.rknn_input_us / count / 1000.0,
+               totals_.rknn_run_us / count / 1000.0,
+               totals_.rknn_output_us / count / 1000.0,
+               totals_.postprocess_us / count / 1000.0,
+               totals_.rknn_release_us / count / 1000.0,
+               totals_.control_us / count / 1000.0,
+               unaccounted_ms);
+        fflush(stdout);
+
+        start_us_ = now_us;
+        capture_start_ = capture_stats;
+        samples_.clear();
+        totals_ = PerfSample{};
+    }
+
+private:
+    uint64_t window_us_ = 10000000ULL;
+    uint64_t start_us_ = 0;
+    UvcCapture::Stats capture_start_{};
+    std::vector<uint64_t> samples_;
+    PerfSample totals_{};
+    bool initialized_ = false;
+};
+
+class FramePerfGuard {
+public:
+    explicit FramePerfGuard(PerfWindow& window)
+        : window_(window), start_us_(monotonic_us_now()) {}
+    ~FramePerfGuard() {
+        if (!active_) return;
+        sample.total_us = monotonic_us_now() - start_us_;
+        window_.record(sample);
+    }
+    void activate() { active_ = true; }
+
+    PerfSample sample{};
+
+private:
+    PerfWindow& window_;
+    uint64_t start_us_ = 0;
+    bool active_ = false;
+};
+
+class StateLogGate {
+public:
+    explicit StateLogGate(uint64_t interval_us) : interval_us_(interval_us) {}
+
+    bool due(const std::string& /*state_key*/) {
+        const uint64_t now_us = monotonic_us_now();
+        const bool interval_elapsed = last_log_us_ == 0 || interval_us_ == 0 ||
+                                      now_us - last_log_us_ >= interval_us_;
+        if (!interval_elapsed) return false;
+        last_log_us_ = now_us;
+        return true;
+    }
+
+private:
+    uint64_t interval_us_ = 1000000ULL;
+    uint64_t last_log_us_ = 0;
+};
 
 // ── JPEG decode -> RGB letterbox ─────────────────────────────────────────────
 static int decode_mjpeg(const uint8_t* jpeg_data, size_t jpeg_len,
@@ -551,9 +732,15 @@ int main(int argc, char** argv)
     dup2(g_devnull, STDERR_FILENO);
     for (int i = 0; i < 10; i++) capture.getFrame(mjpeg_buf, MJPEG_BUF, 500);
 
+    const int state_log_interval_ms =
+        env_nonnegative_int("AKA_STATE_LOG_INTERVAL_MS", 1000);
+    StateLogGate state_log_gate(static_cast<uint64_t>(state_log_interval_ms) * 1000ULL);
+    PerfWindow perf_window(10000000ULL);
+    perf_window.reset(capture.stats());
+    LOGI("Performance window=10s; state log interval=%dms", state_log_interval_ms);
+
     int  frame_idx    = 0;
     int  proc_cnt     = 0;
-    long t_decode_acc = 0, t_infer_acc = 0, t_ctrl_acc = 0;
 
     // ── Last-seen tracking for search-after-loss ──────────────────────────────
     int  last_offset      = 0;
@@ -579,8 +766,8 @@ int main(int argc, char** argv)
     int  bucket_confirm   = 0;   // 连续看到桶的帧数（防抖）
     LeKiwiMoveController lekiwi_move(FRAME_WIDTH, FRAME_HEIGHT);
     LeKiwiArmController* lekiwi_arm_ctrl = use_lekiwi ? new LeKiwiArmController(*ft_arm_ptr) : nullptr;
-    int lekiwi_arm_log_tick = 0;
     bool capture_paused_for_arm = false;
+    bool fake_ball_logged = false;
     LeKiwiPickConfig lekiwi_pick_base_config;
     lekiwi_pick_base_config.load();
     // Retry offsets are expressed in centimetres to match lekiwi_pick_config.txt.
@@ -601,16 +788,24 @@ int main(int argc, char** argv)
 
     // ── Chase loop ────────────────────────────────────────────────────────────
     while (true) {
+        perf_window.maybe_report(capture.stats());
         if (g_stop_requested) {
+            perf_window.maybe_report(capture.stats(), true);
             cleanup_and_exit();
             return 0;
         }
 
-        struct timeval t_start, t_stage;
-        gettimeofday(&t_start, nullptr);
+        FramePerfGuard frame_perf(perf_window);
+        struct timeval t_stage;
+        auto finish_control_timing = [&]() {
+            const long control_us = elapsed_us(t_stage);
+            frame_perf.sample.control_us += control_us;
+        };
         frame_idx++;
 
-        int jpeg_len = capture.getFrame(mjpeg_buf, MJPEG_BUF, 200);
+        long capture_wait_us = 0, capture_copy_us = 0;
+        int jpeg_len = capture.getFrame(mjpeg_buf, MJPEG_BUF, 200,
+                                        &capture_wait_us, &capture_copy_us);
         if (jpeg_len <= 0) {
             if (g_stop_requested) {
                 cleanup_and_exit();
@@ -633,7 +828,12 @@ int main(int argc, char** argv)
         float lb_sc=1.0f;
         if (decode_mjpeg(mjpeg_buf, jpeg_len, rgb_buf, model_w, model_h,
                          &lb_x, &lb_y, &lb_sc, &th, &td, &tc) != 0) continue;
-        t_decode_acc += th + td + tc;
+        frame_perf.activate();
+        frame_perf.sample.capture_wait_us = capture_wait_us;
+        frame_perf.sample.capture_copy_us = capture_copy_us;
+        frame_perf.sample.jpeg_header_us = th;
+        frame_perf.sample.jpeg_decode_us = td;
+        frame_perf.sample.letterbox_copy_us = tc;
 
         if (use_lekiwi && game_state == GameState::PICK_BALL) {
             drive_ptr->standby();
@@ -687,6 +887,7 @@ int main(int argc, char** argv)
                 dup2(g_devnull, STDERR_FILENO);
             }
 
+            size_t last_pick_step = std::numeric_limits<size_t>::max();
             while (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->done()) {
                 if (g_stop_requested) {
                     cleanup_and_exit();
@@ -699,13 +900,12 @@ int main(int argc, char** argv)
                     cleanup_and_exit();
                     return 1;
                 }
-                if ((++lekiwi_arm_log_tick % 10) == 0) {
-                    dup2(g_saved_stderr, STDERR_FILENO);
+                const size_t pick_step = lekiwi_arm_ctrl->step_index();
+                if (pick_step != last_pick_step) {
                     printf("[GAME] PICK_BALL step=%zu/%zu %s\n",
-                           lekiwi_arm_ctrl->step_index() + 1,
-                           lekiwi_arm_ctrl->step_count(),
+                           pick_step + 1, lekiwi_arm_ctrl->step_count(),
                            lekiwi_arm_ctrl->current_step_label());
-                    dup2(g_devnull, STDERR_FILENO);
+                    last_pick_step = pick_step;
                 }
             }
 
@@ -735,9 +935,15 @@ int main(int argc, char** argv)
                 }
                 std::vector<detection> post_pick_dets;
                 long post_ti = 0, post_tr = 0, post_to = 0, post_tp = 0;
+                long post_trel = 0;
                 long post_frame_us = 0;
 
-                int post_jpeg_len = capture.getFrame(mjpeg_buf, MJPEG_BUF, 1000);
+                long post_capture_wait_us = 0, post_capture_copy_us = 0;
+                int post_jpeg_len = capture.getFrame(mjpeg_buf, MJPEG_BUF, 1000,
+                                                     &post_capture_wait_us,
+                                                     &post_capture_copy_us);
+                frame_perf.sample.capture_wait_us += post_capture_wait_us;
+                frame_perf.sample.capture_copy_us += post_capture_copy_us;
                 if (post_jpeg_len > 0) {
                     long post_th = 0, post_td = 0, post_tc = 0;
                     int post_lb_x = 0, post_lb_y = 0;
@@ -762,11 +968,18 @@ int main(int argc, char** argv)
                                        FRAME_WIDTH, FRAME_HEIGHT,
                                        post_lb_x, post_lb_y, post_lb_sc,
                                        0.5f, 0.45f, post_pick_dets,
-                                       &post_ti, &post_tr, &post_to, &post_tp);
+                                       &post_ti, &post_tr, &post_to, &post_tp,
+                                       &post_trel);
                         }
                         post_frame_us = elapsed_us(post_frame_start);
-                        t_decode_acc += post_th + post_td + post_tc;
-                        t_infer_acc += post_ti + post_tr + post_to + post_tp;
+                        frame_perf.sample.jpeg_header_us += post_th;
+                        frame_perf.sample.jpeg_decode_us += post_td;
+                        frame_perf.sample.letterbox_copy_us += post_tc;
+                        frame_perf.sample.rknn_input_us += post_ti;
+                        frame_perf.sample.rknn_run_us += post_tr;
+                        frame_perf.sample.rknn_output_us += post_to;
+                        frame_perf.sample.postprocess_us += post_tp;
+                        frame_perf.sample.rknn_release_us += post_trel;
                     }
                 }
 
@@ -795,7 +1008,6 @@ int main(int argc, char** argv)
                        post_frame_us > 0 ? 1e6f / post_frame_us : 0.0f);
                 dup2(g_devnull, STDERR_FILENO);
                 lekiwi_arm_ctrl->reset();
-                lekiwi_arm_log_tick = 0;
                 lekiwi_move.reset();
                 if (holding) {
                     if (lekiwi_pick_retry_index > 0) {
@@ -881,6 +1093,7 @@ int main(int argc, char** argv)
                 dup2(g_devnull, STDERR_FILENO);
             }
 
+            size_t last_put_step = std::numeric_limits<size_t>::max();
             while (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->done()) {
                 if (g_stop_requested) {
                     cleanup_and_exit();
@@ -893,13 +1106,12 @@ int main(int argc, char** argv)
                     cleanup_and_exit();
                     return 1;
                 }
-                if ((++lekiwi_arm_log_tick % 10) == 0) {
-                    dup2(g_saved_stderr, STDERR_FILENO);
+                const size_t put_step = lekiwi_arm_ctrl->step_index();
+                if (put_step != last_put_step) {
                     printf("[GAME] PUT_BALL step=%zu/%zu %s\n",
-                           lekiwi_arm_ctrl->step_index() + 1,
-                           lekiwi_arm_ctrl->step_count(),
+                           put_step + 1, lekiwi_arm_ctrl->step_count(),
                            lekiwi_arm_ctrl->current_step_label());
-                    dup2(g_devnull, STDERR_FILENO);
+                    last_put_step = put_step;
                 }
             }
 
@@ -925,7 +1137,6 @@ int main(int argc, char** argv)
                     return 0;
                 }
                 if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
-                lekiwi_arm_log_tick = 0;
                 lekiwi_move.reset();
                 stopped = false;
                 stop_confirm_cnt = 0;
@@ -950,8 +1161,13 @@ int main(int argc, char** argv)
         {
             // 用全分辨率 bucket_rgb 做 HSV（decode_mjpeg 已解码到 model 尺寸的 rgb_buf，
             // 这里重新以 FRAME 尺寸解码一次供桶检测用）
+            long bucket_th = 0, bucket_td = 0, bucket_tc = 0;
             decode_mjpeg(mjpeg_buf, jpeg_len, bucket_rgb,
-                         FRAME_WIDTH, FRAME_HEIGHT, nullptr, nullptr, nullptr);
+                         FRAME_WIDTH, FRAME_HEIGHT, nullptr, nullptr, nullptr,
+                         &bucket_th, &bucket_td, &bucket_tc);
+            frame_perf.sample.jpeg_header_us += bucket_th;
+            frame_perf.sample.jpeg_decode_us += bucket_td;
+            frame_perf.sample.letterbox_copy_us += bucket_tc;
 
             if (game_state == GameState::DEPOSIT) {
                 drive_ptr->standby();
@@ -986,15 +1202,18 @@ int main(int argc, char** argv)
                 if (cmd.idle) drive_ptr->standby();
                 else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
 
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d off=%d tol=%d size=%d/%d target=%d L=%d R=%d stable=%d\n",
-                       bucket_visible ? 1 : 0, cmd.label, br.cx,
-                       br.cx - lekiwi_move.target_center(),
-                       lekiwi_move.bucket_center_tolerance(),
-                       br.w, br.h,
-                       lekiwi_move.bucket_target_position(),
-                       cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
-                dup2(g_devnull, STDERR_FILENO);
+                const std::string bucket_log_key =
+                    std::string("LEKIWI_BUCKET:") + cmd.label + ":" +
+                    (bucket_visible ? "1:" : "0:") + (cmd.reached ? "1" : "0");
+                if (state_log_gate.due(bucket_log_key)) {
+                    printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d off=%d tol=%d size=%d/%d target=%d L=%d R=%d stable=%d\n",
+                           bucket_visible ? 1 : 0, cmd.label, br.cx,
+                           br.cx - lekiwi_move.target_center(),
+                           lekiwi_move.bucket_center_tolerance(),
+                           br.w, br.h,
+                           lekiwi_move.bucket_target_position(),
+                           cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
+                }
 
                 if (cmd.reached) {
                     drive_ptr->standby();
@@ -1026,9 +1245,9 @@ int main(int argc, char** argv)
                     bucket_lost_cnt++;
                     // 旋转搜索（始终向右转，可根据场地调整）
                     drive_ptr->drive(BUCKET_SEARCH_SPD, -BUCKET_SEARCH_SPD);
-                    dup2(g_saved_stderr, STDERR_FILENO);
-                    printf("[GAME] FIND_BUCKET searching... lost=%d\n", bucket_lost_cnt);
-                    dup2(g_devnull, STDERR_FILENO);
+                    if (state_log_gate.due("FIND_BUCKET:SEARCH")) {
+                        printf("[GAME] FIND_BUCKET searching... lost=%d\n", bucket_lost_cnt);
+                    }
                 }
                 continue;
             }
@@ -1076,15 +1295,15 @@ int main(int argc, char** argv)
             int bk_r = std::max(-100, std::min(100, bk_spd - bk_bias));
             drive_ptr->drive(bk_l, bk_r);
 
-            dup2(g_saved_stderr, STDERR_FILENO);
-            printf("[GAME] APPROACH_BUCKET  area=%.3f off=%d  L=%d R=%d\n",
-                   br.area_ratio, bk_off, bk_l, bk_r);
-            dup2(g_devnull, STDERR_FILENO);
+            if (state_log_gate.due("APPROACH_BUCKET")) {
+                printf("[GAME] APPROACH_BUCKET  area=%.3f off=%d  L=%d R=%d\n",
+                       br.area_ratio, bk_off, bk_l, bk_r);
+            }
             continue;
         }
 
         // ── 以下为 CHASE_BALL 逻辑（YOLO based）─────────────────────────────
-        long ti=0, tr=0, to=0, tp=0;
+        long ti=0, tr=0, to=0, tp=0, trel=0;
         std::vector<detection> dets;
         if (fake_ball) {
             detection fake{};
@@ -1096,15 +1315,20 @@ int main(int argc, char** argv)
             fake.cls = 0;
             fake.batch_idx = 0;
             dets.push_back(fake);
-            dup2(g_saved_stderr, STDERR_FILENO);
-            printf("[SAFETY] LEKIWI_FAKE_BALL injected for chase validation\n");
-            dup2(g_devnull, STDERR_FILENO);
+            if (!fake_ball_logged) {
+                printf("[SAFETY] LEKIWI_FAKE_BALL injected for chase validation\n");
+                fake_ball_logged = true;
+            }
         } else {
             detect_run(&rknn_ctx, rgb_buf, model_w, model_h,
                        FRAME_WIDTH, FRAME_HEIGHT, lb_x, lb_y, lb_sc,
-                       0.5f, 0.45f, dets, &ti, &tr, &to, &tp);
+                       0.5f, 0.45f, dets, &ti, &tr, &to, &tp, &trel);
         }
-        t_infer_acc += ti + tr + to + tp;
+        frame_perf.sample.rknn_input_us += ti;
+        frame_perf.sample.rknn_run_us += tr;
+        frame_perf.sample.rknn_output_us += to;
+        frame_perf.sample.postprocess_us += tp;
+        frame_perf.sample.rknn_release_us += trel;
 
         // ── Smooth differential steering ──────────────────────────────────────
         gettimeofday(&t_stage, nullptr);
@@ -1133,13 +1357,14 @@ int main(int argc, char** argv)
                 if (cmd.idle) drive_ptr->standby();
                 else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
 
-                dup2(g_saved_stderr, STDERR_FILENO);
-                long frame_us = elapsed_us(t_start);
-                printf("[STATE] LEKIWI_CHASE label=%s area=%.3f off=%3d size=%3d L=%3d R=%3d ready=%d fps=%.1f\n",
-                       cmd.label, area_ratio, offset, (int)std::max(b.w, b.h),
-                       cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0,
-                       1e6f / frame_us);
-                dup2(g_devnull, STDERR_FILENO);
+                const std::string chase_log_key =
+                    std::string("LEKIWI_CHASE:") + cmd.label + ":" +
+                    (cmd.reached ? "1" : "0");
+                if (state_log_gate.due(chase_log_key)) {
+                    printf("[STATE] LEKIWI_CHASE label=%s area=%.3f off=%3d size=%3d L=%3d R=%3d ready=%d\n",
+                           cmd.label, area_ratio, offset, (int)std::max(b.w, b.h),
+                           cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
+                }
 
                 if (stop_after_chase) {
                     const bool has_motion = !cmd.idle &&
@@ -1174,7 +1399,7 @@ int main(int argc, char** argv)
                            lekiwi_pick_retry_offsets_cm.size());
                     dup2(g_devnull, STDERR_FILENO);
                 }
-                t_ctrl_acc += elapsed_us(t_stage);
+                finish_control_timing();
                 continue;
             }
 
@@ -1203,7 +1428,7 @@ int main(int argc, char** argv)
                     dup2(g_devnull, STDERR_FILENO);
                 } else {
                     drive_ptr->standby();
-                    t_ctrl_acc += elapsed_us(t_stage);
+                    finish_control_timing();
                     continue;
                 }
             }
@@ -1217,11 +1442,11 @@ int main(int argc, char** argv)
                                 (offset < -CENTER_DEAD_ZONE) ? -REVERSE_SPEED + 5 :
                                 -REVERSE_SPEED;
                 drive_ptr->drive(rev_left, rev_right);
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[STATE] REVERSE  area=%.3f off=%d  L=%d R=%d\n",
-                       area_ratio, offset, rev_left, rev_right);
-                dup2(g_devnull, STDERR_FILENO);
-                t_ctrl_acc += elapsed_us(t_stage);
+                if (state_log_gate.due("LEGACY:REVERSE")) {
+                    printf("[STATE] REVERSE  area=%.3f off=%d  L=%d R=%d\n",
+                           area_ratio, offset, rev_left, rev_right);
+                }
+                finish_control_timing();
                 continue;
             }
 
@@ -1258,7 +1483,7 @@ int main(int argc, char** argv)
                 } else {
                     drive_ptr->brake();
                 }
-                t_ctrl_acc += elapsed_us(t_stage);
+                finish_control_timing();
                 continue;
             } else if (area_ratio >= AREA_STOP && abs(stop_off) > STOP_CENTER_ZONE) {
                 // Close but not at target offset → proportional pivot to align
@@ -1295,7 +1520,7 @@ int main(int argc, char** argv)
                     // 重置历史，避免连续踢
                     align_off_head = 0;
                     align_cnt = 0;
-                    t_ctrl_acc += elapsed_us(t_stage);
+                    finish_control_timing();
                     continue;
                 }
 
@@ -1303,11 +1528,11 @@ int main(int argc, char** argv)
                 int pivot_spd = (int)(ALIGN_PIVOT_MIN + t * (ALIGN_PIVOT_SPD - ALIGN_PIVOT_MIN));
                 int pivot = (stop_off > 0) ? pivot_spd : -pivot_spd;
                 drive_ptr->drive(pivot, -pivot);
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[STATE] ALIGN  area=%.3f off=%3d stop_off=%3d  pivot=%d  [%d]\n",
-                       area_ratio, offset, stop_off, pivot, align_cnt);
-                dup2(g_devnull, STDERR_FILENO);
-                t_ctrl_acc += elapsed_us(t_stage);
+                if (state_log_gate.due("LEGACY:ALIGN")) {
+                    printf("[STATE] ALIGN  area=%.3f off=%3d stop_off=%3d  pivot=%d  [%d]\n",
+                           area_ratio, offset, stop_off, pivot, align_cnt);
+                }
+                finish_control_timing();
                 continue;
             } else {
                 stop_confirm_cnt = 0;
@@ -1337,12 +1562,11 @@ int main(int argc, char** argv)
 
             drive_ptr->drive(left_spd, right_spd);
 
-            dup2(g_saved_stderr, STDERR_FILENO);
-            long frame_us = elapsed_us(t_start);
             const char* steer = (area_ratio >= AREA_BRAKE) ? "pivot" : "diff";
-            printf("[STATE] CHASE zone=%-6s area=%.3f off=%3d steer=%-5s  L=%3d R=%3d  fps=%.1f\n",
-                   zone, area_ratio, offset, steer, left_spd, right_spd, 1e6f / frame_us);
-            dup2(g_devnull, STDERR_FILENO);
+            if (state_log_gate.due(std::string("LEGACY:CHASE:") + zone)) {
+                printf("[STATE] CHASE zone=%-6s area=%.3f off=%3d steer=%-5s  L=%3d R=%3d\n",
+                       zone, area_ratio, offset, steer, left_spd, right_spd);
+            }
 
         } else {
             stop_after_chase_confirm = 0;
@@ -1350,11 +1574,11 @@ int main(int argc, char** argv)
                 auto cmd = lekiwi_move.update_ball(dets);
                 if (cmd.idle) drive_ptr->standby();
                 else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[STATE] LEKIWI_SEARCH label=%s L=%d R=%d\n",
-                       cmd.label, cmd.left_speed, cmd.right_speed);
-                dup2(g_devnull, STDERR_FILENO);
-                t_ctrl_acc += elapsed_us(t_stage);
+                if (state_log_gate.due(std::string("LEKIWI_SEARCH:") + cmd.label)) {
+                    printf("[STATE] LEKIWI_SEARCH label=%s L=%d R=%d\n",
+                           cmd.label, cmd.left_speed, cmd.right_speed);
+                }
+                finish_control_timing();
                 continue;
             }
             int frames_lost = frame_idx - last_seen_frame;
@@ -1362,22 +1586,23 @@ int main(int argc, char** argv)
                 // 刚丢失：沿最后看到球的方向快速转
                 int pivot = (last_offset >= 0) ? SEARCH_PIVOT_SPD : -SEARCH_PIVOT_SPD;
                 drive_ptr->drive(pivot, -pivot);
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[STATE] SEARCH lost=%d/%d  pivot=%s\n",
-                       frames_lost, SEARCH_FRAMES, last_offset >= 0 ? "R" : "L");
-                dup2(g_devnull, STDERR_FILENO);
+                if (state_log_gate.due("LEGACY:SEARCH")) {
+                    printf("[STATE] SEARCH lost=%d/%d  pivot=%s\n",
+                           frames_lost, SEARCH_FRAMES, last_offset >= 0 ? "R" : "L");
+                }
             } else {
                 // 长时间丢失：原地慢速旋转扫描，方向每 60 帧反转一次
                 int scan_dir = ((frame_idx / 60) % 2 == 0) ? 1 : -1;
                 drive_ptr->drive(scan_dir * SEARCH_PIVOT_SPD, -scan_dir * SEARCH_PIVOT_SPD);
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[STATE] SCAN  frame=%d  dir=%s\n",
-                       frame_idx, scan_dir > 0 ? "R" : "L");
-                dup2(g_devnull, STDERR_FILENO);
+                if (state_log_gate.due(std::string("LEGACY:SCAN:") +
+                                       (scan_dir > 0 ? "R" : "L"))) {
+                    printf("[STATE] SCAN  frame=%d  dir=%s\n",
+                           frame_idx, scan_dir > 0 ? "R" : "L");
+                }
             }
         }
 
-        t_ctrl_acc += elapsed_us(t_stage);
+        finish_control_timing();
     }
 
     free(mjpeg_buf);
