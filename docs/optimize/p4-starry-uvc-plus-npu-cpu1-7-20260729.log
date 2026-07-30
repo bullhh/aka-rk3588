@@ -1,0 +1,23 @@
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+attempt to claim already-claimed interface 1
+[detect] model loaded  w=640 h=480 ch=3  n_out=2
+[detect]   out[0] dims=[1,4,6300,0] type=INT8
+[detect]   out[1] dims=[1,1,6300,0] type=INT8
+[UvcCapture] streaming 640x480 @ 30 fps
+[NPU] Using core mask RKNN_NPU_CORE_0
+model input num: 1, output num: 2
+input tensors:
+  index=0, name=images, n_dims=4, dims=[1, 480, 640, 3], n_elems=921600, size=921600, fmt=NHWC, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003922
+output tensors:
+  index=0, name=boxes_raw, n_dims=3, dims=[1, 4, 6300, 0], n_elems=25200, size=25200, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-123, scale=2.575453
+  index=1, name=scores_raw, n_dims=3, dims=[1, 1, 6300, 0], n_elems=6300, size=6300, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003835
+model is NHWC input fmt
+model input height=480, width=640, channel=3
+[UVC-BENCH] concurrent NPU load enabled: models/tennis.rknn
+[UVC-BENCH] window=10.02s captured=111 consumed=111 camera=11.07fps consumed=11.07fps avg_frame=40.5KiB
+[UVC-BENCH] window=10.05s captured=99 consumed=99 camera=9.85fps consumed=9.85fps avg_frame=40.4KiB
+[UVC-BENCH] total=30.01s captured=296 consumed=296 camera=9.86fps consumed=9.86fps avg_frame=37.8KiB
+[UVC-BENCH] npu_runs=1109 failures=0 avg=27.78ms

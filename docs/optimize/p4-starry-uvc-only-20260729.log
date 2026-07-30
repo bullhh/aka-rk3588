@@ -1,0 +1,9 @@
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+attempt to claim already-claimed interface 1
+[UvcCapture] streaming 640x480 @ 30 fps
+[UVC-BENCH] window=10.03s captured=287 consumed=287 camera=28.61fps consumed=28.61fps avg_frame=40.1KiB
+[UVC-BENCH] window=10.05s captured=280 consumed=280 camera=27.86fps consumed=27.86fps avg_frame=41.3KiB
+[UVC-BENCH] total=30.03s captured=761 consumed=761 camera=25.34fps consumed=25.34fps avg_frame=40.9KiB

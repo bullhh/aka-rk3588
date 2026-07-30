@@ -1,0 +1,73 @@
+=== LeKiwi full pick-and-bucket flow ===
+  model       : /home/orangepi/robot/aka-rk3588/models/tennis.rknn
+  feetech_dev : auto
+  uvc_index   : 0
+  rknn core   : 0
+  ld path     :
+  command     : /home/orangepi/robot/aka-rk3588/build/tennis /home/orangepi/robot/aka-rk3588/models/tennis.rknn auto 0 auto lekiwi
+
+[FeetechBus] auto backend: trying userspace libusb CDC first
+[FeetechBus] libusb initialized
+[FeetechBus] libusb device count=6
+[FeetechBus] device[0] bus=2 addr=1 vid=1d6b pid=0002 class=09/00/01 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[1] bus=1 addr=1 vid=1d6b pid=0002 class=09/00/01 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[2] bus=3 addr=4 vid=1a86 pid=55d3 class=02/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=02/02/01 eps=1
+[FeetechBus]     candidate control interface=0
+[FeetechBus]   iface=1 alt=0 class=0a/00/00 eps=2
+[FeetechBus]     ep=0x02 attr=0x02 max=32
+[FeetechBus]     ep=0x82 attr=0x02 max=64
+[FeetechBus]     candidate data interface=1 ep_in=0x82 ep_out=0x02
+[FeetechBus] auto detach requested for bus=3 addr=4
+[FeetechBus] claim control interface=0 failed: LIBUSB_ERROR_OTHER
+[FeetechBus] clear halt ep_in=0x82 rc=0
+[FeetechBus] clear halt ep_out=0x02 rc=0
+[FeetechBus] SET_LINE_CODING iface=0 baud=1000000 rc=7
+[FeetechBus] SET_CONTROL_LINE_STATE iface=0 value=0x0003 rc=0
+[FeetechBus] selected CDC device bus=3 addr=4 vid=1a86 pid=55d3 control_if=0 data_if=1
+[FeetechBus] auto backend selected: libusb CDC bus endpoint in=0x82 out=0x02
+[FeetechArm] torque enabled at current positions; no startup jump
+[FeetechArm] slow move: arm<=25.0 deg/s gripper<=40.0 deg/s
+[FeetechArm] slow move complete in 1.40 s
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+attempt to claim already-claimed interface 1
+[detect] model loaded  w=640 h=480 ch=3  n_out=2
+[detect]   out[0] dims=[1,4,6300,0] type=INT8
+[detect]   out[1] dims=[1,1,6300,0] type=INT8
+[UvcCapture] streaming 640x480 @ 30 fps
+[NPU] Using core mask RKNN_NPU_CORE_0
+model input num: 1, output num: 2
+input tensors:
+  index=0, name=images, n_dims=4, dims=[1, 480, 640, 3], n_elems=921600, size=921600, fmt=NHWC, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003922
+output tensors:
+  index=0, name=boxes_raw, n_dims=3, dims=[1, 4, 6300, 0], n_elems=25200, size=25200, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-123, scale=2.575453
+  index=1, name=scores_raw, n_dims=3, dims=[1, 1, 6300, 0], n_elems=6300, size=6300, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003835
+model is NHWC input fmt
+model input height=480, width=640, channel=3
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[PERF] window=10.04s captured=80 processed=76 camera=7.97fps effective=7.57fps busy=19.22fps
+[PERF] frame_ms avg=75.09 p50=81.08 p95=136.31 max=195.51
+[PERF] stage_ms wait=23.07 capture_copy=1.904 jpeg_header=0.052 jpeg_decode=8.82 letterbox_copy=0.305
+[PERF] stage_ms input=1.43 run=34.96 output=0.26 post=0.070 release=0.014 control=3.730 unaccounted=0.47
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[PERF] window=10.06s captured=138 processed=133 camera=13.72fps effective=13.22fps busy=19.53fps
+[PERF] frame_ms avg=74.60 p50=80.99 p95=138.88 max=181.09
+[PERF] stage_ms wait=23.40 capture_copy=1.122 jpeg_header=0.046 jpeg_decode=8.73 letterbox_copy=0.308
+[PERF] stage_ms input=0.46 run=35.63 output=0.22 post=0.074 release=0.015 control=3.452 unaccounted=1.14
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FINE_LEFT area=0.083 off=-68 size=159 L= -8 R=  8 ready=0
+[PERF] window=9.95s captured=138 processed=129 camera=13.87fps effective=12.97fps busy=19.86fps
+[PERF] frame_ms avg=74.15 p50=80.85 p95=151.78 max=201.28
+[PERF] stage_ms wait=23.80 capture_copy=1.582 jpeg_header=0.045 jpeg_decode=8.72 letterbox_copy=0.306
+[PERF] stage_ms input=0.46 run=35.35 output=0.22 post=0.073 release=0.015 control=2.396 unaccounted=1.19
+[PERF-TEST] completed duration=30s npu_yield=3us

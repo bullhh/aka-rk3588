@@ -1,0 +1,4 @@
+[UvcCapture] streaming 640x480 @ 30 fps
+[UVC-BENCH] window=10.00s captured=300 consumed=300 camera=29.99fps consumed=29.99fps avg_frame=39.4KiB
+[UVC-BENCH] window=10.03s captured=301 consumed=301 camera=30.00fps consumed=30.00fps avg_frame=39.4KiB
+[UVC-BENCH] total=30.00s captured=900 consumed=900 camera=30.00fps consumed=30.00fps avg_frame=39.1KiB

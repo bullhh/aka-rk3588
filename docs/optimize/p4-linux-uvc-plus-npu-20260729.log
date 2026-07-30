@@ -1,0 +1,15 @@
+[UvcCapture] streaming 640x480 @ 30 fps
+[NPU] Using core mask RKNN_NPU_CORE_0_1_2
+model input num: 1, output num: 2
+input tensors:
+  index=0, name=images, n_dims=4, dims=[1, 480, 640, 3], n_elems=921600, size=921600, fmt=NHWC, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003922
+output tensors:
+  index=0, name=boxes_raw, n_dims=3, dims=[1, 4, 6300, 0], n_elems=25200, size=25200, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-123, scale=2.575453
+  index=1, name=scores_raw, n_dims=3, dims=[1, 1, 6300, 0], n_elems=6300, size=6300, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003835
+model is NHWC input fmt
+model input height=480, width=640, channel=3
+[UVC-BENCH] concurrent NPU load enabled: models/tennis.rknn
+[UVC-BENCH] window=10.00s captured=302 consumed=302 camera=30.19fps consumed=30.19fps avg_frame=38.8KiB
+[UVC-BENCH] window=10.03s captured=301 consumed=301 camera=30.00fps consumed=30.00fps avg_frame=39.0KiB
+[UVC-BENCH] total=30.00s captured=902 consumed=902 camera=30.06fps consumed=30.06fps avg_frame=38.7KiB
+[UVC-BENCH] npu_runs=1883 failures=0 avg=15.94ms
