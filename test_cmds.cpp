@@ -346,17 +346,19 @@ int cmd_test_uvc(int uvc_index)
 // ── test-yolo ─────────────────────────────────────────────────────────────────
 int cmd_test_yolo(const char* model_path, int uvc_index)
 {
-    UvcCapture capture;
-    if (capture.open(uvc_index, FRAME_WIDTH, FRAME_HEIGHT, 30) != 0) {
-        LOGE("Failed to open UVC device %d", uvc_index); return 1;
-    }
     rknn_app_context_t ctx;
     if (detect_init(model_path, &ctx) != 0) {
-        LOGE("Failed to load model: %s", model_path); capture.close(); return 1;
+        LOGE("Failed to load model: %s", model_path); return 1;
     }
     int mw = ctx.model_width, mh = ctx.model_height;
     LOGI("Model input %dx%d", mw, mh);
 
+    UvcCapture capture;
+    if (capture.open(uvc_index, FRAME_WIDTH, FRAME_HEIGHT, 30) != 0) {
+        LOGE("Failed to open UVC device %d", uvc_index);
+        detect_deinit(&ctx);
+        return 1;
+    }
     const size_t MBUF = 1024 * 1024;
     uint8_t* mjpeg_buf = (uint8_t*)malloc(MBUF);
     LOGI("Warming up camera (20 frames)...");

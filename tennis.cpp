@@ -691,15 +691,6 @@ int main(int argc, char** argv)
         LOGI("Arm initialized (%s)", arm_dev);
     }
 
-    UvcCapture capture;
-    g_capture = &capture;
-    if (capture.open(uvc_index, FRAME_WIDTH, FRAME_HEIGHT, 30) != 0) {
-        LOGE("Failed to open UVC device %d", uvc_index);
-        cleanup_and_exit();
-        return 1;
-    }
-    LOGI("Camera opened (%dx%d)", FRAME_WIDTH, FRAME_HEIGHT);
-
     rknn_app_context_t rknn_ctx;
     g_rknn_ctx = &rknn_ctx;
     if (detect_init(model_path, &rknn_ctx) != 0) {
@@ -710,6 +701,15 @@ int main(int argc, char** argv)
     int model_w = rknn_ctx.model_width;
     int model_h = rknn_ctx.model_height;
     LOGI("Model input %dx%d", model_w, model_h);
+
+    UvcCapture capture;
+    g_capture = &capture;
+    if (capture.open(uvc_index, FRAME_WIDTH, FRAME_HEIGHT, 30) != 0) {
+        LOGE("Failed to open UVC device %d", uvc_index);
+        cleanup_and_exit();
+        return 1;
+    }
+    LOGI("Camera opened (%dx%d)", FRAME_WIDTH, FRAME_HEIGHT);
 
     // Suppress rknn runtime stderr spam
     g_devnull      = open("/dev/null", O_WRONLY);
