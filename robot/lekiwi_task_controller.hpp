@@ -25,21 +25,44 @@ struct LeKiwiPickConfig {
     float carry_id3_deg = -45.0f;
     float carry_id4_deg = 51.8f;
     float carry_id5_deg = 0.1f;
-    // Exact recorded release pose above the bucket. The safe approach pose is
-    // fixed internally and is independent of these final joint angles.
-    float place_id1_deg = -11.3f;
+    // Exact recorded release pose above the bucket. The safe approach keeps
+    // fixed height joints while ID1 follows this release direction.
+    float place_id1_deg = -14.3f;
     float place_id2_deg = 20.4f;
     float place_id3_deg = -25.7f;
     float place_id4_deg = 70.0f;
     float place_id5_deg = 0.0f;
-    int bucket_stop_size_px = 360;
+    // Bucket distance uses sqrt(width * height), which is less sensitive to
+    // changing box aspect ratio than min(width, height).
+    int bucket_stop_size_px = 380;
     int bucket_center_tolerance_px = 20;
     int bucket_stable_frames = 3;
-    float arm_speed_scale = 0.5f;
+
+    // The only user-facing speed setting: 1=debug, 2=stable, 3=fast, 4=max.
+    // The values below are resolved from this level after loading the file.
+    int motion_speed_level = 4;
+    float arm_speed_scale = 5.0f / 3.0f;
+    float arm_home_speed_deg_s = 25.0f;
+    float gripper_speed_deg_s = 60.0f;
+    int pick_settle_ms = 50;
+    int place_settle_ms = 50;
     float gripper_open_delta_deg = 60.0f;
     float gripper_close_delta_deg = -60.0f;
+    // Kept internally for compatibility with older configuration files.
     int carry_duration_ms = 2000;
-    int carry_settle_ms = 500;
+    int carry_settle_ms = 0;
+    int ball_far_speed = 65;
+    int ball_near_speed = 20;
+    int ball_backward_speed = 25;
+    int ball_fine_turn_speed = 15;
+    int ball_slowdown_start_percent = 70;
+    int bucket_far_speed = 70;
+    int bucket_near_speed = 25;
+    int bucket_backward_speed = 25;
+    int bucket_turn_speed = 35;
+    int bucket_fine_turn_speed = 18;
+    int bucket_slowdown_start_percent = 65;
+    int braking_lookahead_ms = 350;
     int ball_stop_size_px = 155;
     int ball_stop_tolerance_px = 5;
     int ball_center_tolerance_px = 30;
@@ -57,6 +80,8 @@ struct LeKiwiPickConfig {
     bool load(const std::string& path = "config/lekiwi_pick_config.txt");
     bool save(const std::string& path = "config/lekiwi_pick_config.txt") const;
     bool validate(std::string& error) const;
+    void apply_motion_profile();
+    float arm_motion_speed_deg_s() const { return 30.0f * arm_speed_scale; }
     int carry_duration_ticks() const { return std::max(1, (carry_duration_ms + 49) / 50); }
     int carry_settle_ticks() const { return std::max(0, (carry_settle_ms + 49) / 50); }
 };
@@ -69,6 +94,8 @@ public:
         bool idle = true;
         bool reached = false;
         const char* label = "IDLE";
+        int distance_size = 0;
+        int predicted_size = 0;
     };
 
     explicit LeKiwiMoveController(int frame_width = 640, int frame_height = 480);
@@ -111,6 +138,14 @@ private:
     int bucket_target_position_ = 325;
     int stable_count_ = 0;
     int last_target_cx_ = -1;
+    bool ball_fine_aligning_ = false;
+    bool bucket_fine_aligning_ = false;
+    bool distance_initialized_ = false;
+    float filtered_position_ = 0.0f;
+    float position_rate_px_s_ = 0.0f;
+    double last_distance_ms_ = 0.0;
+    double brake_until_ms_ = 0.0;
+    bool last_forward_command_ = false;
     LeKiwiPickConfig config_;
 };
 

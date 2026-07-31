@@ -111,14 +111,12 @@ struct ResolvedPlaceTarget {
     float approach_roll = 0.0f;
 };
 
-// Fixed safe pose measured from the previously validated high/retracted
-// approach. It must not change when the user tunes the final release pose.
-constexpr float kPlaceApproachPanDeg = 0.0f;
+// Fixed high/retracted shoulder, elbow and wrist values measured from the
+// validated safe approach. The horizontal joint follows the release direction.
 constexpr float kPlaceApproachShoulderDeg = -4.1f;
 constexpr float kPlaceApproachElbowDeg = -52.8f;
 constexpr float kPlaceApproachWristDeg = 80.0f;
 constexpr float kPlaceApproachRollDeg = 0.0f;
-constexpr int kPlaceSettleMs = 500;
 
 static ResolvedGrabTarget resolve_grab_target(const LeKiwiPickConfig& config) {
     float reference_x = 0.0f;
@@ -156,7 +154,10 @@ static ResolvedPlaceTarget resolve_place_target(const LeKiwiPickConfig& config) 
     target.release_elbow = config.place_id3_deg;
     target.release_wrist = config.place_id4_deg;
     target.release_roll = config.place_id5_deg;
-    target.approach_pan = kPlaceApproachPanDeg;
+    // Keep the horizontal joint aligned with the configured release pose.
+    // CARRY and the current release pose already use the same direction, so
+    // forcing the safe approach to 0 degrees only adds a left-right swing.
+    target.approach_pan = config.place_id1_deg;
     target.approach_shoulder = kPlaceApproachShoulderDeg;
     target.approach_elbow = kPlaceApproachElbowDeg;
     target.approach_wrist = kPlaceApproachWristDeg;
@@ -380,8 +381,13 @@ bool LeKiwiPickConfig::load(const std::string& path) {
             bucket_center_tolerance_px = std::max(1, (int)v);
         else if (key == "bucket_stable_frames")
             bucket_stable_frames = std::max(1, (int)v);
+        else if (key == "motion_speed_level")
+            motion_speed_level = (int)v;
         else if (key == "arm_speed_scale")
-            arm_speed_scale = std::max(0.1f, std::min(1.0f, v));
+            arm_speed_scale = v;
+        else if (key == "arm_home_speed_deg_s") arm_home_speed_deg_s = v;
+        else if (key == "gripper_speed_deg_s") gripper_speed_deg_s = v;
+        else if (key == "pick_settle_ms") pick_settle_ms = (int)v;
         else if (key == "gripper_open_delta_deg") gripper_open_delta_deg = v;
         else if (key == "gripper_close_delta_deg") gripper_close_delta_deg = v;
         else if (key == "carry_duration_ms") {
@@ -389,9 +395,15 @@ bool LeKiwiPickConfig::load(const std::string& path) {
             has_new_duration = true;
         }
         else if (key == "carry_settle_ms") {
-            carry_settle_ms = std::max(0, (int)v);
+            carry_settle_ms = (int)v;
             has_new_settle = true;
         }
+        else if (key == "ball_far_speed") ball_far_speed = (int)v;
+        else if (key == "ball_near_speed") ball_near_speed = (int)v;
+        else if (key == "ball_backward_speed") ball_backward_speed = (int)v;
+        else if (key == "ball_fine_turn_speed") ball_fine_turn_speed = (int)v;
+        else if (key == "ball_slowdown_start_percent")
+            ball_slowdown_start_percent = (int)v;
         else if (key == "ball_stop_size_px") ball_stop_size_px = std::max(1, (int)v);
         else if (key == "ball_stop_tolerance_px") ball_stop_tolerance_px = std::max(0, (int)v);
         else if (key == "ball_center_tolerance_px") ball_center_tolerance_px = std::max(0, (int)v);
@@ -434,7 +446,88 @@ bool LeKiwiPickConfig::load(const std::string& path) {
         grab_id5_deg = 0.0f;
         pre_grab_clearance_m = legacy_pre_grab_y - legacy_grab_y;
     }
+    // A single profile is authoritative. Older per-stage speed keys are still
+    // parsed above so old files remain readable, but no longer produce a
+    // partially mixed speed setup.
+    apply_motion_profile();
     return true;
+}
+
+void LeKiwiPickConfig::apply_motion_profile() {
+    // Resolve a safe profile without rewriting the configured value.  Keeping
+    // an invalid value intact lets validate() report the configuration error
+    // before any motion starts.
+    const int resolved_level = std::max(1, std::min(4, motion_speed_level));
+    switch (resolved_level) {
+    case 1: // debug
+        arm_speed_scale = 0.50f;
+        arm_home_speed_deg_s = 15.0f;
+        gripper_speed_deg_s = 30.0f;
+        pick_settle_ms = 300;
+        carry_settle_ms = 300;
+        place_settle_ms = 500;
+        ball_far_speed = bucket_far_speed = 20;
+        ball_near_speed = bucket_near_speed = 8;
+        ball_backward_speed = bucket_backward_speed = 8;
+        ball_fine_turn_speed = bucket_fine_turn_speed = 6;
+        bucket_turn_speed = 12;
+        ball_slowdown_start_percent = 90;
+        bucket_slowdown_start_percent = 85;
+        braking_lookahead_ms = 100;
+        break;
+    case 2: // stable
+        arm_speed_scale = 0.75f;
+        arm_home_speed_deg_s = 20.0f;
+        gripper_speed_deg_s = 40.0f;
+        pick_settle_ms = 200;
+        carry_settle_ms = 200;
+        place_settle_ms = 300;
+        ball_far_speed = bucket_far_speed = 30;
+        ball_near_speed = bucket_near_speed = 10;
+        ball_backward_speed = bucket_backward_speed = 10;
+        ball_fine_turn_speed = bucket_fine_turn_speed = 8;
+        bucket_turn_speed = 20;
+        ball_slowdown_start_percent = 85;
+        bucket_slowdown_start_percent = 80;
+        braking_lookahead_ms = 150;
+        break;
+    case 3: // fast
+        arm_speed_scale = 1.0f;
+        arm_home_speed_deg_s = 25.0f;
+        gripper_speed_deg_s = 45.0f;
+        pick_settle_ms = 150;
+        carry_settle_ms = 100;
+        place_settle_ms = 200;
+        ball_far_speed = bucket_far_speed = 40;
+        ball_near_speed = bucket_near_speed = 15;
+        ball_backward_speed = bucket_backward_speed = 15;
+        ball_fine_turn_speed = bucket_fine_turn_speed = 10;
+        bucket_turn_speed = 25;
+        ball_slowdown_start_percent = 80;
+        bucket_slowdown_start_percent = 75;
+        braking_lookahead_ms = 220;
+        break;
+    default: // max
+        arm_speed_scale = 5.0f / 3.0f;
+        arm_home_speed_deg_s = 25.0f;
+        gripper_speed_deg_s = 60.0f;
+        pick_settle_ms = 50;
+        carry_settle_ms = 0;
+        place_settle_ms = 50;
+        ball_far_speed = 65;
+        ball_near_speed = 20;
+        ball_backward_speed = 25;
+        ball_fine_turn_speed = 15;
+        bucket_far_speed = 70;
+        bucket_near_speed = 25;
+        bucket_backward_speed = 25;
+        bucket_fine_turn_speed = 18;
+        bucket_turn_speed = 35;
+        ball_slowdown_start_percent = 70;
+        bucket_slowdown_start_percent = 65;
+        braking_lookahead_ms = 350;
+        break;
+    }
 }
 
 bool LeKiwiPickConfig::save(const std::string& path) const {
@@ -472,7 +565,7 @@ bool LeKiwiPickConfig::save(const std::string& path) const {
     ofs << "place_id3_deg = " << place_id3_deg << "\n";
     ofs << "place_id4_deg = " << place_id4_deg << "\n";
     ofs << "place_id5_deg = " << place_id5_deg << "\n\n";
-    ofs << "# 桶检测框较短边达到该像素值后停车；增大表示更靠近桶。\n";
+    ofs << "# 桶等效尺寸sqrt(宽*高)达到该值后停车；增大表示更靠近桶。\n";
     ofs << "bucket_stop_size_px = " << bucket_stop_size_px << "\n";
     ofs << "# 桶中心相对画面中心的允许偏差；超出时停止前进并低速对正。\n";
     ofs << "bucket_center_tolerance_px = " << bucket_center_tolerance_px << "\n";
@@ -481,12 +574,9 @@ bool LeKiwiPickConfig::save(const std::string& path) const {
     ofs << "# ID6夹爪开合量。保持现有力度时不要修改。\n";
     ofs << "gripper_open_delta_deg = " << gripper_open_delta_deg << "\n";
     ofs << "gripper_close_delta_deg = " << gripper_close_delta_deg << "\n\n";
-    ofs << "# 从抬球位置收至carry姿态所需时间，以及到位后的额外稳定时间，单位毫秒。\n";
-    ofs << "# 时间越大动作越慢、更柔和；时间过小会使收臂显得突然。\n";
-    ofs << "carry_duration_ms = " << carry_duration_ms << "\n";
-    ofs << "carry_settle_ms = " << carry_settle_ms << "\n\n";
-    ofs << "# 机械臂动作总速度倍率：0.3调试，0.5稳定运行，最大1.0。\n";
-    ofs << "arm_speed_scale = " << arm_speed_scale << "\n\n";
+    ofs << "# 一键速度等级：1调试，2稳定，3快速，4极速。\n";
+    ofs << "# 程序会统一设置机械臂、夹爪、球和桶的快慢速、减速距离与等待时间。\n";
+    ofs << "motion_speed_level = " << motion_speed_level << "\n\n";
     ofs << "# 视觉停车参数。检测框尺寸取网球框宽、高中的较大值。\n";
     ofs << "# 目标尺寸：增大表示靠球更近才停车；减小表示离球更远就停车。\n";
     ofs << "ball_stop_size_px = " << ball_stop_size_px << "\n";
@@ -497,15 +587,19 @@ bool LeKiwiPickConfig::save(const std::string& path) const {
     ofs << "# 增大更容易进入抓取但左右误差更大；减小对得更正但可能左右反复调整。\n";
     ofs << "ball_center_tolerance_px = " << ball_center_tolerance_px << "\n";
     ofs << "# 连续多少个检测帧同时满足距离和球心条件后才启动机械臂。\n";
-    ofs << "# 增大更稳但等待更久；Starry约2.3fps时，2帧约需0.9秒。\n";
+    ofs << "# 增大更稳但等待更久；约16fps时，2帧约需0.13秒。\n";
     ofs << "ball_stable_frames = " << ball_stable_frames << "\n";
     return true;
 }
 
 bool LeKiwiPickConfig::validate(std::string& error) const {
     error.clear();
-    if (bucket_stop_size_px < 50 || bucket_stop_size_px > 470) {
-        error = "bucket_stop_size_px must be in [50,470] for a 640x480 frame";
+    if (motion_speed_level < 1 || motion_speed_level > 4) {
+        error = "motion_speed_level must be in [1,4]";
+        return false;
+    }
+    if (bucket_stop_size_px < 50 || bucket_stop_size_px > 700) {
+        error = "bucket_stop_size_px must be in [50,700] for a 640x480 frame";
         return false;
     }
     if (bucket_center_tolerance_px < 5 || bucket_center_tolerance_px > 100) {
@@ -544,6 +638,14 @@ void LeKiwiMoveController::update_geometry(int frame_width, int frame_height) {
 void LeKiwiMoveController::reset() {
     stable_count_ = 0;
     last_target_cx_ = -1;
+    ball_fine_aligning_ = false;
+    bucket_fine_aligning_ = false;
+    distance_initialized_ = false;
+    filtered_position_ = 0.0f;
+    position_rate_px_s_ = 0.0f;
+    last_distance_ms_ = 0.0;
+    brake_until_ms_ = 0.0;
+    last_forward_command_ = false;
 }
 
 void LeKiwiMoveController::remember_ball(int cx) {
@@ -596,86 +698,170 @@ LeKiwiMoveController::Command LeKiwiMoveController::control_target(const TargetB
                                                                    bool bucket) {
     if (!target.visible) {
         stable_count_ = 0;
+        ball_fine_aligning_ = false;
+        bucket_fine_aligning_ = false;
+        distance_initialized_ = false;
+        position_rate_px_s_ = 0.0f;
+        brake_until_ms_ = 0.0;
+        last_forward_command_ = false;
         if (bucket) {
-            return diff_drive_cmd("BUCKET_SEARCH", 12, -12);
+            return diff_drive_cmd("BUCKET_SEARCH", config_.bucket_fine_turn_speed,
+                                  -config_.bucket_fine_turn_speed);
         }
         if (last_target_cx_ >= 0) {
             int frame_center = target_cx_;
             return last_target_cx_ < frame_center
-                ? diff_drive_cmd("SEARCH_LEFT", -30, 30)
-                : diff_drive_cmd("SEARCH_RIGHT", 30, -30);
+                ? diff_drive_cmd("SEARCH_LEFT", -config_.bucket_turn_speed,
+                                 config_.bucket_turn_speed)
+                : diff_drive_cmd("SEARCH_RIGHT", config_.bucket_turn_speed,
+                                 -config_.bucket_turn_speed);
         }
         return diff_drive_cmd("IDLE", 0, 0);
     }
 
     last_target_cx_ = target.cx;
-    int position = bucket ? std::min(target.w, target.h) : std::max(target.w, target.h);
+    const float raw_position = bucket
+        ? std::sqrt((float)std::max(0, target.w) * std::max(0, target.h))
+        : (float)std::max(target.w, target.h);
+    const double now_ms = monotonic_ms();
+    if (!distance_initialized_ || now_ms - last_distance_ms_ > 500.0) {
+        filtered_position_ = raw_position;
+        position_rate_px_s_ = 0.0f;
+        distance_initialized_ = true;
+    } else {
+        const float dt_s = std::max(0.01f,
+            (float)((now_ms - last_distance_ms_) / 1000.0));
+        const float previous = filtered_position_;
+        constexpr float kPositionAlpha = 0.45f;
+        filtered_position_ += kPositionAlpha * (raw_position - filtered_position_);
+        if (last_forward_command_) {
+            float instant_rate = (filtered_position_ - previous) / dt_s;
+            instant_rate = std::max(-600.0f, std::min(1000.0f, instant_rate));
+            position_rate_px_s_ = 0.65f * position_rate_px_s_ +
+                                  0.35f * instant_rate;
+        } else {
+            position_rate_px_s_ *= 0.5f;
+        }
+    }
+    last_distance_ms_ = now_ms;
+
+    const int position = std::max(0, (int)std::lround(filtered_position_));
+    const float predicted_position = filtered_position_ +
+        std::max(0.0f, position_rate_px_s_) * config_.braking_lookahead_ms / 1000.0f;
+    const int predicted = std::max(position,
+        (int)std::lround(predicted_position));
+    const int target_position = bucket ? bucket_target_position_ : target_position_;
+    const int tolerance = bucket ? std::max(12, target_position / 25)
+                                 : config_.ball_stop_tolerance_px;
+
+    auto command = [&](const char* label, int left, int right) {
+        Command cmd = diff_drive_cmd(label, left, right);
+        cmd.distance_size = position;
+        cmd.predicted_size = predicted;
+        last_forward_command_ = left >= 0 && right >= 0 && left + right > 0;
+        return cmd;
+    };
+
+    auto forward_speed = [&](int slowdown_percent, int far_speed, int near_speed) {
+        const float brake_start = target_position * slowdown_percent / 100.0f;
+        const float progress = std::max(filtered_position_, predicted_position);
+        if (progress <= brake_start) return far_speed;
+        const float span = std::max(1.0f, target_position - brake_start);
+        const float ratio = std::max(0.0f,
+            std::min(1.0f, (target_position - progress) / span));
+        return near_speed + (int)std::lround((far_speed - near_speed) * ratio);
+    };
 
     if (target.cx < left_) {
         stable_count_ = 0;
-        int near = std::abs(target_cx_ - target.cx) < target_w_ * (bucket ? 1 : 3) / (bucket ? 1 : 2);
-        int spd = near ? 12 : 30;
-        return diff_drive_cmd(bucket ? "BUCKET_LEFT" : "BALL_LEFT", -spd, spd);
+        const bool near = std::abs(target_cx_ - target.cx) <
+            target_w_ * (bucket ? 1 : 3) / (bucket ? 1 : 2);
+        const int fine = bucket ? config_.bucket_fine_turn_speed
+                                : config_.ball_fine_turn_speed;
+        const int spd = near ? fine : config_.bucket_turn_speed;
+        return command(bucket ? "BUCKET_LEFT" : "BALL_LEFT", -spd, spd);
     }
 
     if (target.cx > right_) {
         stable_count_ = 0;
-        int near = std::abs(target_cx_ - target.cx) < target_w_ * (bucket ? 1 : 3) / (bucket ? 1 : 2);
-        int spd = near ? 12 : 30;
-        return diff_drive_cmd(bucket ? "BUCKET_RIGHT" : "BALL_RIGHT", spd, -spd);
+        const bool near = std::abs(target_cx_ - target.cx) <
+            target_w_ * (bucket ? 1 : 3) / (bucket ? 1 : 2);
+        const int fine = bucket ? config_.bucket_fine_turn_speed
+                                : config_.ball_fine_turn_speed;
+        const int spd = near ? fine : config_.bucket_turn_speed;
+        return command(bucket ? "BUCKET_RIGHT" : "BALL_RIGHT", spd, -spd);
     }
 
-    if (bucket) {
-        const int center_error = target.cx - target_cx_;
-        if (std::abs(center_error) > config_.bucket_center_tolerance_px) {
-            stable_count_ = 0;
-            constexpr int kFineAlignSpeed = 8;
-            return center_error < 0
-                ? diff_drive_cmd("BUCKET_FINE_LEFT", -kFineAlignSpeed,
-                                 kFineAlignSpeed)
-                : diff_drive_cmd("BUCKET_FINE_RIGHT", kFineAlignSpeed,
-                                 -kFineAlignSpeed);
-        }
+    if (now_ms < brake_until_ms_) {
+        stable_count_ = 0;
+        return command(bucket ? "BUCKET_BRAKE" : "BALL_BRAKE", 0, 0);
+    }
+    if (brake_until_ms_ > 0.0) {
+        brake_until_ms_ = 0.0;
+        position_rate_px_s_ = 0.0f;
     }
 
-    if (!bucket) {
-        int center_error = target.cx - target_cx_;
-        if (std::abs(center_error) > config_.ball_center_tolerance_px) {
-            stable_count_ = 0;
-            int spd = 8;
+    if (position > target_position + tolerance) {
+        stable_count_ = 0;
+        const int reverse = bucket ? config_.bucket_backward_speed
+                                   : config_.ball_backward_speed;
+        return command(bucket ? "BUCKET_BACKWARD" : "BALL_BACKWARD",
+                       -reverse, -reverse);
+    }
+
+    const bool too_far = position < target_position - tolerance;
+    if (too_far && last_forward_command_ && predicted >= target_position) {
+        stable_count_ = 0;
+        brake_until_ms_ = now_ms + config_.braking_lookahead_ms;
+        return command(bucket ? "BUCKET_BRAKE" : "BALL_BRAKE", 0, 0);
+    }
+
+    const int center_error = target.cx - target_cx_;
+    const int center_error_abs = std::abs(center_error);
+    bool& fine_aligning = bucket ? bucket_fine_aligning_ : ball_fine_aligning_;
+    const int center_tolerance = bucket ? config_.bucket_center_tolerance_px
+                                        : config_.ball_center_tolerance_px;
+    const int align_enter_px = center_tolerance + 10;
+    const int align_exit_px = std::max(5, center_tolerance - 5);
+    if (fine_aligning) {
+        if (center_error_abs <= align_exit_px) fine_aligning = false;
+    } else if (center_error_abs > align_enter_px) {
+        fine_aligning = true;
+    }
+
+    const int far_speed = bucket ? config_.bucket_far_speed : config_.ball_far_speed;
+    const int near_speed = bucket ? config_.bucket_near_speed : config_.ball_near_speed;
+    const int fine_turn = bucket ? config_.bucket_fine_turn_speed
+                                 : config_.ball_fine_turn_speed;
+    const int slowdown = bucket ? config_.bucket_slowdown_start_percent
+                                : config_.ball_slowdown_start_percent;
+    const int approach_speed = forward_speed(slowdown, far_speed, near_speed);
+
+    if (fine_aligning) {
+        stable_count_ = 0;
+        if (too_far) {
+            const int inner_speed = std::max(0, approach_speed - 2 * fine_turn);
             return center_error < 0
-                ? diff_drive_cmd("BALL_FINE_LEFT", -spd, spd)
-                : diff_drive_cmd("BALL_FINE_RIGHT", spd, -spd);
+                ? command(bucket ? "BUCKET_CURVE_LEFT" : "BALL_CURVE_LEFT",
+                          inner_speed, approach_speed)
+                : command(bucket ? "BUCKET_CURVE_RIGHT" : "BALL_CURVE_RIGHT",
+                          approach_speed, inner_speed);
         }
-        if (position < target_position_ - config_.ball_stop_tolerance_px) {
-            stable_count_ = 0;
-            // Slow down after the detected ball reaches 80% of the target size.
-            // Keep integer arithmetic so the threshold is deterministic on both
-            // Linux and StarryOS.
-            int spd = (position * 10 > target_position_ * 8) ? 8 : 35;
-            return diff_drive_cmd("BALL_FORWARD", spd, spd);
-        }
-        if (position > target_position_ + config_.ball_stop_tolerance_px) {
-            stable_count_ = 0;
-            return diff_drive_cmd("BALL_BACKWARD", -12, -12);
-        }
-    } else {
-        if (position < bucket_target_position_) {
-            stable_count_ = 0;
-            const int speed = position * 10 >= bucket_target_position_ * 9
-                ? 12 : 25;
-            return diff_drive_cmd("BUCKET_FORWARD", speed, speed);
-        }
-        const int too_close_margin = std::max(30,
-                                              bucket_target_position_ / 5);
-        if (position > bucket_target_position_ + too_close_margin) {
-            stable_count_ = 0;
-            return diff_drive_cmd("BUCKET_BACKWARD", -12, -12);
-        }
+        return center_error < 0
+            ? command(bucket ? "BUCKET_FINE_LEFT" : "BALL_FINE_LEFT",
+                      -fine_turn, fine_turn)
+            : command(bucket ? "BUCKET_FINE_RIGHT" : "BALL_FINE_RIGHT",
+                      fine_turn, -fine_turn);
+    }
+
+    if (too_far) {
+        stable_count_ = 0;
+        return command(bucket ? "BUCKET_FORWARD" : "BALL_FORWARD",
+                       approach_speed, approach_speed);
     }
 
     stable_count_++;
-    Command cmd = diff_drive_cmd(bucket ? "BUCKET_READY" : "BALL_READY", 0, 0);
+    Command cmd = command(bucket ? "BUCKET_READY" : "BALL_READY", 0, 0);
     cmd.reached = stable_count_ >=
         (bucket ? config_.bucket_stable_frames : config_.ball_stable_frames);
     return cmd;
@@ -708,15 +894,13 @@ std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
             target.pan, target.x, target.y, target.pre_y,
             target.pre_wrist, target.grab_wrist);
     std::vector<Step> seq = {
-        {Kind::HOME, "", config.home_x, config.home_y},
+        {Kind::HOME, "pick_home", config.home_x, config.home_y},
         {Kind::JOINT_TARGET, "arm_shoulder_pan", target.pan, 0.0f},
-        {Kind::JOINT_DELTA, "arm_gripper", config.gripper_open_delta_deg, 0.0f},
-        {Kind::JOINT_TARGET, "arm_wrist_roll", config.grab_id5_deg, 0.0f},
         {Kind::MOVE_TO, "pre_grab", target.x, target.pre_y, target.pre_wrist},
         {Kind::MOVE_TO, "grab", target.x, target.y, target.grab_wrist},
-        {Kind::GAP, "", 0.0f, 0.0f},
+        {Kind::GAP, "", (float)config.pick_settle_ms, 0.0f},
         {Kind::JOINT_DELTA, "arm_gripper", config.gripper_close_delta_deg, 0.0f},
-        {Kind::GAP, "", 0.0f, 0.0f},
+        {Kind::GAP, "", (float)config.pick_settle_ms, 0.0f},
         {Kind::MOVE_TO, "clear", target.x, target.pre_y, target.pre_wrist},
         {Kind::SMOOTH_POSE, "carry", 30.0f, (float)config.carry_settle_ms},
     };
@@ -725,14 +909,13 @@ std::vector<LeKiwiArmController::Step> LeKiwiArmController::pick_sequence(
 
 std::vector<LeKiwiArmController::Step> LeKiwiArmController::put_sequence(
     const LeKiwiPickConfig& config) {
-    (void)config;
     return {
-        {Kind::SMOOTH_POSE, "place_approach", 30.0f, 300.0f},
-        {Kind::SMOOTH_POSE, "place_release", 16.0f, (float)kPlaceSettleMs},
-        {Kind::SMOOTH_POSE, "release_gripper", 40.0f, (float)kPlaceSettleMs},
-        {Kind::SMOOTH_POSE, "place_approach", 20.0f, 300.0f},
+        {Kind::SMOOTH_POSE, "place_approach", 30.0f, (float)config.place_settle_ms},
+        {Kind::SMOOTH_POSE, "place_release", 21.0f, (float)config.place_settle_ms},
+        {Kind::SMOOTH_POSE, "release_gripper", 50.0f, (float)config.place_settle_ms},
+        {Kind::SMOOTH_POSE, "place_approach", 25.0f, (float)config.place_settle_ms},
         {Kind::SMOOTH_POSE, "carry", 30.0f, (float)config.carry_settle_ms},
-        {Kind::SMOOTH_POSE, "close_gripper", 40.0f, 100.0f},
+        {Kind::SMOOTH_POSE, "close_gripper", 50.0f, (float)config.place_settle_ms},
     };
 }
 
@@ -839,10 +1022,9 @@ bool LeKiwiArmController::begin_pick(const LeKiwiPickConfig& config) {
     config_ = config;
     reset();
     config_ = config;
-    const ResolvedGrabTarget target = resolve_grab_target(config_);
     std::string validation_error;
-    if (!validate_pick_target(config_, target, validation_error)) {
-        return fail("unsafe pick trajectory: " + validation_error);
+    if (!config_.validate(validation_error)) {
+        return fail("invalid pick config: " + validation_error);
     }
     sequence_ = pick_sequence(config_);
     active_ = true;
@@ -851,11 +1033,11 @@ bool LeKiwiArmController::begin_pick(const LeKiwiPickConfig& config) {
 
 bool LeKiwiArmController::begin_put() {
     reset();
-    const ResolvedPlaceTarget target = resolve_place_target(config_);
     std::string validation_error;
-    if (!validate_place_target(config_, target, validation_error)) {
-        return fail("unsafe place trajectory: " + validation_error);
+    if (!config_.validate(validation_error)) {
+        return fail("invalid place config: " + validation_error);
     }
+    const ResolvedPlaceTarget target = resolve_place_target(config_);
     fprintf(stderr,
             "[LeKiwiArmController] place approach_ids=(%.1f,%.1f,%.1f,%.1f,%.1f) "
             "release_ids=(%.1f,%.1f,%.1f,%.1f,%.1f) "
@@ -874,12 +1056,9 @@ bool LeKiwiArmController::begin_put() {
 
 bool LeKiwiArmController::begin_stage(const std::string& stage) {
     reset();
-    if (stage.rfind("place-", 0) == 0) {
-        const ResolvedPlaceTarget target = resolve_place_target(config_);
-        std::string validation_error;
-        if (!validate_place_target(config_, target, validation_error)) {
-            return fail("unsafe place trajectory: " + validation_error);
-        }
+    std::string validation_error;
+    if (!config_.validate(validation_error)) {
+        return fail("invalid arm config: " + validation_error);
     }
     if (stage == "home") {
         sequence_ = {{Kind::HOME, "home", config_.home_x, config_.home_y}};
@@ -887,19 +1066,16 @@ bool LeKiwiArmController::begin_stage(const std::string& stage) {
         sequence_ = {{Kind::SMOOTH_POSE, "carry", 30.0f,
                       (float)config_.carry_settle_ms}};
     } else if (stage == "place-approach" || stage == "place-hover") {
-        sequence_ = {{Kind::SMOOTH_POSE, "place_approach", 30.0f, 300.0f}};
+        sequence_ = {{Kind::SMOOTH_POSE, "place_approach", 30.0f,
+                      (float)config_.place_settle_ms}};
     } else if (stage == "place-release") {
         sequence_ = {
-            {Kind::SMOOTH_POSE, "place_approach", 30.0f, 300.0f},
-            {Kind::SMOOTH_POSE, "place_release", 16.0f,
-             (float)kPlaceSettleMs},
+            {Kind::SMOOTH_POSE, "place_approach", 30.0f,
+             (float)config_.place_settle_ms},
+            {Kind::SMOOTH_POSE, "place_release", 21.0f,
+             (float)config_.place_settle_ms},
         };
     } else if (stage == "place-cycle") {
-        const ResolvedPlaceTarget target = resolve_place_target(config_);
-        std::string validation_error;
-        if (!validate_place_target(config_, target, validation_error)) {
-            return fail("unsafe place trajectory: " + validation_error);
-        }
         sequence_ = put_sequence(config_);
     } else {
         return fail("unknown arm stage: " + stage);
@@ -1022,8 +1198,11 @@ bool LeKiwiArmController::send_current_targets() {
     std::map<std::string, float> positions;
     const bool homing = step_index_ < sequence_.size() &&
                         sequence_[step_index_].kind == Kind::HOME;
+    const bool slow_homing = homing &&
+        sequence_[step_index_].joint != "pick_home";
     const bool gripper_opening = step_index_ < sequence_.size() &&
-        ((sequence_[step_index_].kind == Kind::JOINT_DELTA &&
+        ((homing && sequence_[step_index_].joint == "pick_home") ||
+         (sequence_[step_index_].kind == Kind::JOINT_DELTA &&
           sequence_[step_index_].joint == "arm_gripper" &&
           sequence_[step_index_].a > 0.0f) ||
          (sequence_[step_index_].kind == Kind::SMOOTH_POSE &&
@@ -1044,7 +1223,7 @@ bool LeKiwiArmController::send_current_targets() {
         return fail("read current positions failed: " + arm_.last_error());
     }
 
-    if (homing && gripper_overloaded) {
+    if (homing && gripper_overloaded && !gripper_opening) {
         const float current = apply_joint_calibration(
             "arm_gripper", positions["arm_gripper"]);
         gripper_contact_ = true;
@@ -1079,9 +1258,21 @@ bool LeKiwiArmController::send_current_targets() {
     }
 
     std::map<std::string, float> action;
-    constexpr float kHomeArmStepDeg = 1.25f;      // 25 deg/s at 20 Hz
-    constexpr float kMotionArmStepDeg = 0.75f;    // 15 deg/s at 20 Hz
-    constexpr float kHomeGripperStepDeg = 2.0f;  // 40 deg/s at 20 Hz
+    const float home_arm_step_deg = config_.arm_home_speed_deg_s / 20.0f;
+    const float motion_arm_step_deg = 30.0f * config_.arm_speed_scale / 20.0f;
+    const float gripper_step_deg = config_.gripper_speed_deg_s / 20.0f;
+    // pick_home deliberately does not command ID1, but the following
+    // concurrent preparation pose still needs its measured start angle.
+    if (targets_.find("arm_shoulder_pan") == targets_.end()) {
+        auto pan = positions.find("arm_shoulder_pan");
+        if (pan != positions.end()) {
+            const float current = apply_joint_calibration(pan->first, pan->second);
+            if (!std::isfinite(current) || std::abs(current) > 98.0f) {
+                return fail("unsafe joint feedback for arm_shoulder_pan");
+            }
+            observed_[pan->first] = current;
+        }
+    }
     for (const auto& kv : targets_) {
         auto it = positions.find(kv.first);
         if (it == positions.end()) continue;
@@ -1092,8 +1283,8 @@ bool LeKiwiArmController::send_current_targets() {
         }
         observed_[kv.first] = current;
         const float max_step = kv.first == "arm_gripper"
-            ? kHomeGripperStepDeg
-            : (homing ? kHomeArmStepDeg : kMotionArmStepDeg);
+            ? gripper_step_deg
+            : (slow_homing ? home_arm_step_deg : motion_arm_step_deg);
         auto previous = commanded_.find(kv.first);
         const float last_command = previous == commanded_.end()
             ? current : previous->second;
@@ -1130,12 +1321,28 @@ bool LeKiwiArmController::advance_step(const Step& step) {
     if (step.kind == Kind::HOME) {
         step_hold_ticks_++;
         if (!step_initialized_) {
-            targets_["arm_shoulder_pan"] = 0.0f;
+            if (step.joint == "pick_home") {
+                // Retract first without rotating ID1 away from its current
+                // direction. Open the gripper and align ID5 during the same
+                // retraction, then turn ID1 directly to the grab target.
+                targets_.erase("arm_shoulder_pan");
+                targets_["arm_wrist_roll"] = config_.grab_id5_deg;
+                targets_["arm_gripper"] = std::min(
+                    100.0f, targets_["arm_gripper"] +
+                    config_.gripper_open_delta_deg);
+                gripper_contact_ = false;
+                gripper_stable_ticks_ = 0;
+                have_previous_gripper_position_ = false;
+            } else {
+                targets_["arm_shoulder_pan"] = 0.0f;
+            }
             targets_["arm_shoulder_lift"] = -31.70f;
             targets_["arm_elbow_flex"] = 27.69f;
             targets_["arm_wrist_flex"] = 80.0f;
-            targets_["arm_wrist_roll"] = 0.0f;
-            if (!gripper_contact_) targets_["arm_gripper"] = 10.0f;
+            if (step.joint != "pick_home") {
+                targets_["arm_wrist_roll"] = 0.0f;
+                if (!gripper_contact_) targets_["arm_gripper"] = 10.0f;
+            }
             step_initialized_ = true;
         }
         if (!send_current_targets()) return false;
@@ -1219,8 +1426,9 @@ bool LeKiwiArmController::advance_step(const Step& step) {
                 max_delta = std::max(max_delta,
                                      std::abs(goal.second - current->second));
             }
-            const float scale = gripper_only ? 1.0f : config_.arm_speed_scale;
-            const float speed = std::max(1.0f, step.a * scale);
+            const float speed = gripper_only
+                ? std::max(1.0f, std::min(step.a, config_.gripper_speed_deg_s))
+                : std::max(1.0f, step.a * config_.arm_speed_scale);
             smooth_duration_ticks_ = std::max(4,
                 (int)std::ceil(max_delta / speed * 20.0f));
             smooth_settle_ticks_ = std::max(0,

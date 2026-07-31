@@ -1090,7 +1090,7 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
 
     auto print_usage = []() {
         printf("Usage:\n");
-        printf("  tennis test-new-arm [dev] calibrate|calib-check|config-check|pos|grab|ik-pick|ik-put|release|release-pos|show|torque-off\n");
+        printf("  tennis test-new-arm [dev] calibrate|calib-check|config-check|motion-check|pos|grab|ik-pick|ik-put|release|release-pos|show|torque-off\n");
         printf("  tennis test-new-arm [dev] task home|carry|place-approach|place-release|place-cycle\n");
         printf("  tennis test-new-arm [dev] set <joint_name> <deg>\n");
         printf("  tennis test-new-arm [dev] raw <joint_name> <raw_0_4095>\n");
@@ -1120,7 +1120,86 @@ int cmd_test_new_arm(const char* uart_dev, int argc, char** argv)
             return 1;
         }
         printf("config ok: pick/place trajectories are inside configured safety limits\n");
+        printf("motion: level=%d arm=%.1f deg/s home=%.1f deg/s gripper=%.1f deg/s "
+               "pick_settle=%d ms carry_settle=%d ms place_settle=%d ms\n",
+               config.motion_speed_level, config.arm_motion_speed_deg_s(),
+               config.arm_home_speed_deg_s, config.gripper_speed_deg_s,
+               config.pick_settle_ms, config.carry_settle_ms,
+               config.place_settle_ms);
+        printf("ball: far=%d near=%d backward=%d fine_turn=%d slowdown=%d%% "
+               "stop=%d+-%d px center=+-%d px stable=%d frames\n",
+               config.ball_far_speed, config.ball_near_speed,
+               config.ball_backward_speed, config.ball_fine_turn_speed,
+               config.ball_slowdown_start_percent, config.ball_stop_size_px,
+               config.ball_stop_tolerance_px,
+               config.ball_center_tolerance_px, config.ball_stable_frames);
+        printf("bucket: metric=sqrt(w*h) far=%d near=%d backward=%d turn=%d "
+               "fine_turn=%d slowdown=%d%% stop=%d px center=+-%d px "
+               "stable=%d frames lookahead=%d ms\n",
+               config.bucket_far_speed, config.bucket_near_speed,
+               config.bucket_backward_speed, config.bucket_turn_speed,
+               config.bucket_fine_turn_speed,
+               config.bucket_slowdown_start_percent,
+               config.bucket_stop_size_px,
+               config.bucket_center_tolerance_px,
+               config.bucket_stable_frames, config.braking_lookahead_ms);
         return 0;
+    }
+
+    if (strcmp(cmd, "motion-check") == 0) {
+        auto run_case = [](bool bucket) {
+            LeKiwiMoveController controller(FRAME_WIDTH, FRAME_HEIGHT);
+            float size = bucket ? 100.0f : 55.0f;
+            const float target = bucket ? controller.bucket_target_position()
+                                        : controller.target_position();
+            float velocity = 0.0f;
+            bool saw_brake = false;
+            bool saw_slowdown = false;
+            bool reached = false;
+            const char* previous_label = "";
+            for (int frame = 0; frame < 240; frame++) {
+                LeKiwiMoveController::Command motion;
+                if (bucket) {
+                    const int w = (int)std::lround(size * 1.25f);
+                    const int h = (int)std::lround(size * 0.80f);
+                    motion = controller.update_bucket(true, FRAME_WIDTH / 2, w, h);
+                } else {
+                    detection det{};
+                    det.bbox.x = FRAME_WIDTH / 2;
+                    det.bbox.y = FRAME_HEIGHT / 2;
+                    det.bbox.w = size;
+                    det.bbox.h = size;
+                    motion = controller.update_ball({det});
+                }
+                if (strcmp(previous_label, motion.label) != 0) {
+                    printf("motion-check %s frame=%d label=%s metric=%d pred=%d "
+                           "L=%d R=%d\n",
+                           bucket ? "bucket" : "ball", frame, motion.label,
+                           motion.distance_size, motion.predicted_size,
+                           motion.left_speed, motion.right_speed);
+                    previous_label = motion.label;
+                }
+                saw_brake = saw_brake || strstr(motion.label, "BRAKE") != nullptr;
+                const int forward = (motion.left_speed + motion.right_speed) / 2;
+                saw_slowdown = saw_slowdown || (forward > 0 && forward < 50);
+                velocity += 0.35f * (forward - velocity);
+                size += velocity * 0.08f;
+                if (motion.reached) {
+                    reached = true;
+                    break;
+                }
+                usleep(50000);
+            }
+            const float allowed_error = bucket ? 20.0f : 10.0f;
+            const bool ok = reached && saw_slowdown &&
+                            std::abs(size - target) <= allowed_error;
+            printf("motion-check %s result=%s brake=%d slowdown=%d final=%.1f\n",
+                   bucket ? "bucket" : "ball",
+                   ok ? "ok" : "failed",
+                   saw_brake ? 1 : 0, saw_slowdown ? 1 : 0, size);
+            return ok;
+        };
+        return run_case(false) && run_case(true) ? 0 : 1;
     }
 
     feetech::FeetechBus bus(uart_dev, 1000000);

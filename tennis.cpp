@@ -770,6 +770,24 @@ int main(int argc, char** argv)
     bool fake_ball_logged = false;
     LeKiwiPickConfig lekiwi_pick_base_config;
     lekiwi_pick_base_config.load();
+    std::string lekiwi_config_error;
+    if (!lekiwi_pick_base_config.validate(lekiwi_config_error)) {
+        LOGE("Invalid config/lekiwi_pick_config.txt: %s",
+             lekiwi_config_error.c_str());
+        cleanup_and_exit();
+        return 1;
+    }
+    LOGI("Motion profile level=%d arm=%.1f home=%.1f gripper=%.1f deg/s "
+         "drive=%d/%d bucket=%d/%d brake_lookahead=%dms",
+         lekiwi_pick_base_config.motion_speed_level,
+         lekiwi_pick_base_config.arm_motion_speed_deg_s(),
+         lekiwi_pick_base_config.arm_home_speed_deg_s,
+         lekiwi_pick_base_config.gripper_speed_deg_s,
+         lekiwi_pick_base_config.ball_far_speed,
+         lekiwi_pick_base_config.ball_near_speed,
+         lekiwi_pick_base_config.bucket_far_speed,
+         lekiwi_pick_base_config.bucket_near_speed,
+         lekiwi_pick_base_config.braking_lookahead_ms);
     // Retry offsets are expressed in centimetres to match lekiwi_pick_config.txt.
     std::vector<std::pair<float, float>> lekiwi_pick_retry_offsets_cm = {
         {0.0f, 0.0f},
@@ -1206,11 +1224,12 @@ int main(int argc, char** argv)
                     std::string("LEKIWI_BUCKET:") + cmd.label + ":" +
                     (bucket_visible ? "1:" : "0:") + (cmd.reached ? "1" : "0");
                 if (state_log_gate.due(bucket_log_key)) {
-                    printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d off=%d tol=%d size=%d/%d target=%d L=%d R=%d stable=%d\n",
+                    printf("[GAME] LEKIWI_BUCKET visible=%d label=%s cx=%d off=%d tol=%d size=%d/%d metric=%d pred=%d target=%d L=%d R=%d stable=%d\n",
                            bucket_visible ? 1 : 0, cmd.label, br.cx,
                            br.cx - lekiwi_move.target_center(),
                            lekiwi_move.bucket_center_tolerance(),
                            br.w, br.h,
+                           cmd.distance_size, cmd.predicted_size,
                            lekiwi_move.bucket_target_position(),
                            cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
                 }
@@ -1361,8 +1380,9 @@ int main(int argc, char** argv)
                     std::string("LEKIWI_CHASE:") + cmd.label + ":" +
                     (cmd.reached ? "1" : "0");
                 if (state_log_gate.due(chase_log_key)) {
-                    printf("[STATE] LEKIWI_CHASE label=%s area=%.3f off=%3d size=%3d L=%3d R=%3d ready=%d\n",
+                    printf("[STATE] LEKIWI_CHASE label=%s area=%.3f off=%3d size=%3d pred=%3d L=%3d R=%3d ready=%d\n",
                            cmd.label, area_ratio, offset, (int)std::max(b.w, b.h),
+                           cmd.predicted_size,
                            cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
                 }
 

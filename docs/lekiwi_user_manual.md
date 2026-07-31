@@ -213,9 +213,9 @@ ID6出现单独的 `0x20` 过载时，仅在夹爪闭合、持球和释放场景
 ### 4.4 找桶与停车
 
 桶使用全分辨率图像进行 HSV 检测。程序先快速转向，再以低速将桶中心精调到
-`bucket_center_tolerance_px` 范围内；未对正时禁止前进。程序以桶框宽、高中的较小值
-作为距离指标：达到 `bucket_stop_size_px` 后停车；接近目标的最后10%自动降速；明显
-过近时后退。距离和中心连续满足 `bucket_stable_frames` 帧后才进入放球。
+`bucket_center_tolerance_px` 范围内。桶距离使用 `sqrt(宽×高)`，避免检测框比例变化
+导致短边忽大忽小。程序根据尺寸增长速度预测制动，连续减速并在停止后低速修正；距离
+和中心连续满足 `bucket_stable_frames` 帧后才进入放球。
 
 ### 4.5 放球
 
@@ -262,20 +262,19 @@ carry_id3_deg = -45.0
 carry_id4_deg = 51.8
 carry_id5_deg = 0.1
 
-place_id1_deg = -11.3
+place_id1_deg = -14.3
 place_id2_deg = 20.4
 place_id3_deg = -25.7
 place_id4_deg = 70.0
 place_id5_deg = 0.0
 
-bucket_stop_size_px = 360
+bucket_stop_size_px = 380
 bucket_center_tolerance_px = 20
 bucket_stable_frames = 3
 gripper_open_delta_deg = 60.0
 gripper_close_delta_deg = -60.0
-carry_duration_ms = 2000
-carry_settle_ms = 500
-arm_speed_scale = 0.5
+
+motion_speed_level = 4
 
 ball_stop_size_px = 155
 ball_stop_tolerance_px = 5
@@ -307,10 +306,20 @@ ball_stable_frames = 2
 `carry_id1_deg～carry_id5_deg` 是夹球成功、车轮启动前的机械臂姿态。
 
 - 小车移动时机械臂偏左：检查 `carry_id1_deg`。
-- 收臂太慢或太快：调整 `carry_duration_ms`。
-- 到位后仍晃动：适当增加 `carry_settle_ms`。
+- 抓球、收臂、放球或底盘整体太慢：提高 `motion_speed_level`。
+- 极速档到位后仍明显晃动：降为3档，不单独混改阶段速度。
 
-### 6.3 最终放球姿态
+### 6.3 动作速度和等待时间
+
+配置只保留 `motion_speed_level`：1调试、2稳定、3快速、4极速。等级会同时选择机械臂、
+夹爪、球和桶的远近速度、减速距离及等待时间，避免不同参数互相冲突。当前4档为普通
+机械臂50度/秒、HOME 25度/秒、夹爪60度/秒。底盘接近球使用远速65、近速20，
+接近桶使用远速70、近速25；HOME保留安全上限，不随极速档继续提高。放球高位与
+最终姿态保持相同ID1方向，避免机械臂在放球过程中无意义地左右往返。夹球开始时
+ID1保持当前方向，已知CARRY姿态使用普通动作速度收回ID2～ID4；收回过程中同时打开
+夹爪并归位ID5，随后ID1直接转到夹球角度，避免经过0度往返并缩短停车后的准备时间。
+
+### 6.4 最终放球姿态
 
 `place_id1_deg～place_id5_deg` 是最终严格执行的关节角度。ID2、ID3共同决定伸展和
 高度，ID4决定夹爪俯仰。它们不影响固定的接近姿态。
@@ -326,9 +335,9 @@ ball_stable_frames = 2
 ID3变得更负不一定让夹爪更低；机械臂是二连杆结构，必须以实际位置和
 `config-check` 为准。
 
-### 6.4 桶停车和对齐
+### 6.5 桶停车和对齐
 
-`bucket_stop_size_px` 使用桶框较短边：
+`bucket_stop_size_px` 使用桶框等效尺寸 `sqrt(宽×高)`：
 
 - 增大：小车更靠近桶才停车。
 - 减小：小车离桶更远就停车。
@@ -340,14 +349,19 @@ ID3变得更负不一定让夹爪更低；机械臂是二连杆结构，必须�
 但过小会因检测抖动反复旋转。`bucket_stable_frames` 是距离和中心同时满足要求的连续
 帧数。当前推荐值为 `±20 px`、连续3帧。
 
-### 6.5 网球停车参数
+### 6.6 接近速度和停车参数
 
 | 参数 | 含义 |
 | --- | --- |
+| `motion_speed_level` | 一键选择机械臂和底盘速度，范围1～4 |
 | `ball_stop_size_px` | 球框宽、高较大值的目标尺寸；增大表示更靠近球 |
 | `ball_stop_tolerance_px` | 目标尺寸允许误差；当前 `155±5` |
 | `ball_center_tolerance_px` | 球心与画面目标中心允许的左右误差 |
 | `ball_stable_frames` | 距离和左右条件连续满足多少帧才抓球 |
+
+底盘不会在固定像素处突然切换速度：远距离按等级高速行驶，进入减速区后连续降速，并
+根据最近帧的尺寸增长速度预测停车位置。发出制动后继续观察，太远则低速前进、太近则
+低速后退，连续稳定后才启动机械臂。因此同一停车目标可用于不同速度等级。
 
 ## 7. 机械臂分阶段命令
 
