@@ -1,0 +1,229 @@
+  MODE       : native (running on board)
+=== aka-rk3588 build ===
+  BUILD_TYPE : Release
+  LOG_LEVEL  : INFO
+  CXX        : g++
+
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /home/orangepi/robot/aka-rk3588/build
+Consolidate compiler generated dependencies of target fileutils
+Consolidate compiler generated dependencies of target imagedrawing
+Consolidate compiler generated dependencies of target imageutils
+[  4%] Building C object utils.out/CMakeFiles/fileutils.dir/file_utils.c.o
+[  8%] Building C object utils.out/CMakeFiles/imagedrawing.dir/image_drawing.c.o
+[ 13%] Building C object utils.out/CMakeFiles/imageutils.dir/image_utils.c.o
+[ 17%] Linking C static library libfileutils.a
+[ 17%] Built target fileutils
+[ 21%] Linking C static library libimagedrawing.a
+[ 21%] Built target imagedrawing
+[ 26%] Linking C static library libimageutils.a
+[ 26%] Built target imageutils
+Consolidate compiler generated dependencies of target tennis
+[ 34%] Building CXX object CMakeFiles/tennis.dir/robot/omni_base.cpp.o
+[ 34%] Building CXX object CMakeFiles/tennis.dir/motor/uart_motor_driver.cpp.o
+[ 43%] Building CXX object CMakeFiles/tennis.dir/test_cmds.cpp.o
+[ 43%] Building CXX object CMakeFiles/tennis.dir/arm/arm.cpp.o
+[ 52%] Building CXX object CMakeFiles/tennis.dir/motor/motor.cpp.o
+[ 52%] Building CXX object CMakeFiles/tennis.dir/motor/pwm_motor_driver.cpp.o
+[ 56%] Building CXX object CMakeFiles/tennis.dir/tennis.cpp.o
+[ 60%] Building CXX object CMakeFiles/tennis.dir/feetech/feetech_bus.cpp.o
+[ 65%] Building CXX object CMakeFiles/tennis.dir/robot/lekiwi_calibration.cpp.o
+[ 69%] Building CXX object CMakeFiles/tennis.dir/robot/feetech_arm.cpp.o
+[ 73%] Building CXX object CMakeFiles/tennis.dir/robot/lekiwi_arm_poses.cpp.o
+[ 78%] Building CXX object CMakeFiles/tennis.dir/robot/lekiwi_task_controller.cpp.o
+[ 82%] Building CXX object CMakeFiles/tennis.dir/capture/uvc_capture.cpp.o
+[ 86%] Building CXX object CMakeFiles/tennis.dir/detect/detect.cpp.o
+[ 91%] Building CXX object CMakeFiles/tennis.dir/3rd/yolov8_src/postprocess.cc.o
+[ 95%] Building CXX object CMakeFiles/tennis.dir/3rd/yolov8_src/rknpu2/yolov8.cc.o
+[100%] Linking CXX executable tennis
+[100%] Built target tennis
+
+=== Build done: /home/orangepi/robot/aka-rk3588/build/tennis ===
+    Size: 717928 bytes
+    Deploy: scp /home/orangepi/robot/aka-rk3588/build/tennis root@<board_ip>:/root/
+=== LeKiwi full pick-and-bucket flow ===
+  model       : /home/orangepi/robot/aka-rk3588/models/tennis.rknn
+  feetech_dev : auto
+  uvc_index   : 0
+  rknn core   : 012
+  ld path     : 
+  command     : /home/orangepi/robot/aka-rk3588/build/tennis /home/orangepi/robot/aka-rk3588/models/tennis.rknn auto 0 auto lekiwi
+
+[FeetechBus] auto backend: trying userspace libusb CDC first
+[FeetechBus] libusb initialized
+[FeetechBus] libusb device count=12
+[FeetechBus] device[0] bus=2 addr=2 vid=05e3 pid=0620 class=09/00/03 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[1] bus=2 addr=1 vid=1d6b pid=0003 class=09/00/03 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[2] bus=1 addr=4 vid=1a86 pid=55d3 class=02/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=02/02/01 eps=1
+[FeetechBus]     candidate control interface=0
+[FeetechBus]   iface=1 alt=0 class=0a/00/00 eps=2
+[FeetechBus]     ep=0x02 attr=0x02 max=32
+[FeetechBus]     ep=0x82 attr=0x02 max=64
+[FeetechBus]     candidate data interface=1 ep_in=0x82 ep_out=0x02
+[FeetechBus] libusb_open bus=1 addr=4 failed: LIBUSB_ERROR_ACCESS
+[FeetechBus] device[3] bus=1 addr=3 vid=0ac8 pid=0346 class=ef/02/01 configs=1
+[FeetechBus]   iface=0 alt=0 class=0e/01/00 eps=1
+[FeetechBus]   iface=1 alt=0 class=0e/02/00 eps=0
+[FeetechBus]   iface=1 alt=1 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=2 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=3 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=4 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=5 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=6 class=0e/02/00 eps=1
+[FeetechBus]   iface=1 alt=7 class=0e/02/00 eps=1
+[FeetechBus]   iface=2 alt=0 class=01/01/00 eps=0
+[FeetechBus]   iface=3 alt=0 class=01/02/00 eps=0
+[FeetechBus]   iface=3 alt=1 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=2 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=3 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=4 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=5 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=6 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=7 class=01/02/00 eps=1
+[FeetechBus]   iface=3 alt=8 class=01/02/00 eps=1
+[FeetechBus] device[4] bus=1 addr=2 vid=05e3 pid=0610 class=09/00/02 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/01 eps=1
+[FeetechBus]   iface=0 alt=1 class=09/00/02 eps=1
+[FeetechBus] device[5] bus=1 addr=1 vid=1d6b pid=0002 class=09/00/01 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[6] bus=8 addr=1 vid=1d6b pid=0003 class=09/00/03 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[7] bus=7 addr=1 vid=1d6b pid=0002 class=09/00/01 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[8] bus=6 addr=1 vid=1d6b pid=0001 class=09/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[9] bus=5 addr=1 vid=1d6b pid=0002 class=09/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[10] bus=4 addr=1 vid=1d6b pid=0001 class=09/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] device[11] bus=3 addr=1 vid=1d6b pid=0002 class=09/00/00 configs=1
+[FeetechBus]   iface=0 alt=0 class=09/00/00 eps=1
+[FeetechBus] libusb_open bus=1 addr=4 failed: LIBUSB_ERROR_ACCESS
+[FeetechBus] auto backend: libusb CDC unavailable: libusb_open bus=1 addr=4 failed: LIBUSB_ERROR_ACCESS
+[FeetechBus] auto backend: falling back to TTY /dev/ttyACM0
+[FeetechBus] opened TTY /dev/ttyACM0 baud=1000000
+[FeetechArm] torque enabled at current positions; no startup jump
+[FeetechArm] slow move: arm<=25.0 deg/s gripper<=40.0 deg/s
+[FeetechArm] slow move complete in 1.70 s
+[FeetechArm] slow move: arm<=25.0 deg/s gripper<=40.0 deg/s
+[FeetechArm] slow move complete in 4.00 s
+[detect] model loaded  w=640 h=480 ch=3  n_out=2
+[detect]   out[0] dims=[1,4,6300,0] type=INT8
+[detect]   out[1] dims=[1,1,6300,0] type=INT8
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+unsupported descriptor subtype VS_STILL_IMAGE_FRAME
+unsupported descriptor subtype VS_COLORFORMAT
+attempt to claim already-claimed interface 1
+[32m[INFO]  Startup gripper=59.2: releasing held object before HOME[0m
+[32m[INFO]  Returning LeKiwi arm to HOME at limited speed[0m
+[32m[INFO]  LeKiwi platform initialized (Feetech auto)[0m
+[NPU] Using core mask RKNN_NPU_CORE_0_1_2
+model input num: 1, output num: 2
+input tensors:
+  index=0, name=images, n_dims=4, dims=[1, 480, 640, 3], n_elems=921600, size=921600, fmt=NHWC, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003922
+output tensors:
+  index=0, name=boxes_raw, n_dims=3, dims=[1, 4, 6300, 0], n_elems=25200, size=25200, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-128, scale=2.516122
+  index=1, name=scores_raw, n_dims=3, dims=[1, 1, 6300, 0], n_elems=6300, size=6300, fmt=UNDEFINED, type=INT8, qnt_type=AFFINE, zp=-128, scale=0.003785
+model is NHWC input fmt
+model input height=480, width=640, channel=3
+[32m[INFO]  Model input 640x480[0m
+[UvcCapture] streaming 640x480 @ 30 fps
+[32m[INFO]  Camera opened (640x480)[0m
+[32m[INFO]  Warming up camera (skip 10 frames)...[0m
+[32m[INFO]  Performance window=10s; state log interval=1000ms[0m
+[32m[INFO]  Motion profile level=4 arm=40.0 home=25.0 gripper=50.0 deg/s drive=50/20 bucket=50/20 brake_lookahead=300ms[0m
+[STATE] LEKIWI_CHASE label=BALL_LEFT area=0.008 off=-92 size= 50 pred= 50 L=-15 R= 15 ready=0
+[STATE] LEKIWI_CHASE label=BALL_CURVE_LEFT area=0.008 off=-29 size= 50 pred= 51 L= 20 R= 50 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.011 off=-19 size= 60 pred= 67 L= 50 R= 50 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.011 off=-24 size= 60 pred= 60 L= 50 R= 50 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.015 off=-29 size= 70 pred= 70 L= 50 R= 50 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.017 off=-19 size= 75 pred= 77 L= 50 R= 50 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.024 off=-24 size= 85 pred= 85 L= 50 R= 50 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.033 off=-39 size=100 pred=103 L= 50 R= 50 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.044 off=-14 size=115 pred=116 L= 50 R= 50 ready=0
+[STATE] LEKIWI_CHASE label=BALL_FORWARD area=0.060 off=-34 size=135 pred=137 L= 34 R= 34 ready=0
+[PERF] window=10.02s captured=300 processed=300 camera=29.95fps effective=29.95fps busy=57.44fps
+[PERF] frame_ms avg=33.39 p50=32.00 p95=36.10 max=54.70
+[PERF] stage_ms wait=15.97 capture_copy=0.007 jpeg_header=0.018 jpeg_decode=4.61 letterbox_copy=0.152
+[PERF] stage_ms input=0.26 run=12.04 output=0.11 post=0.030 release=0.001 control=0.114 unaccounted=0.07
+[STATE] LEKIWI_CHASE label=BALL_BRAKE area=0.079 off=-41 size=161 pred=156 L=  0 R=  0 ready=0
+[GAME] -> PICK_BALL attempt=1/10
+[UvcCapture] paused before PICK_BALL in 25.2 ms
+[GAME] PICK_BALL start catch sequence attempt=1/10 retry_offset_cm=(0.0, 0.0) total_offset_cm=(-0.5, -0.5, -1.0)
+[GAME] PICK_BALL step=1/11 home
+[GAME] PICK_BALL step=2/11 joint_target
+[GAME] PICK_BALL step=3/11 joint_delta
+[GAME] PICK_BALL step=4/11 joint_target
+[GAME] PICK_BALL step=5/11 pre_grab
+[GAME] PICK_BALL step=6/11 grab
+[GAME] PICK_BALL step=7/11 gap
+[GAME] PICK_BALL step=8/11 joint_delta
+[GAME] PICK_BALL step=9/11 gap
+[GAME] PICK_BALL step=10/11 clear
+[GAME] PICK_BALL step=11/11 carry
+[GAME] PICK_BALL step=12/11 done
+[UvcCapture] resumed after PICK_BALL in 167.1 ms
+[GAME] PICK_BALL done gripper=50.2 gripper_hold=yes ball_visible=no area=0.000 off=0 size=0 label=IDLE holding=yes post_fps=27.3
+[GAME] -> FIND_BUCKET
+[GAME] LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH cx=0 off=-320 tol=20 size=0/0 metric=0 pred=0 target=390 L=15 R=-15 stable=0
+[PERF] window=10.05s captured=39 processed=38 camera=3.88fps effective=3.78fps busy=4.04fps
+[PERF] frame_ms avg=264.39 p50=32.02 p95=62.48 max=8712.74
+[PERF] stage_ms wait=16.73 capture_copy=0.009 jpeg_header=0.026 jpeg_decode=7.52 letterbox_copy=0.245
+[PERF] stage_ms input=0.27 run=11.23 output=0.12 post=0.036 release=0.001 control=0.121 unaccounted=228.09
+[GAME] LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH cx=0 off=-320 tol=20 size=0/0 metric=0 pred=0 target=390 L=15 R=-15 stable=0
+[GAME] LEKIWI_BUCKET visible=0 label=BUCKET_SEARCH cx=0 off=-320 tol=20 size=0/0 metric=0 pred=0 target=390 L=15 R=-15 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_RIGHT cx=576 off=256 tol=20 size=128/195 metric=153 pred=153 target=390 L=30 R=-30 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_RIGHT cx=500 off=180 tol=20 size=280/197 metric=232 pred=232 target=390 L=30 R=-30 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_RIGHT cx=402 off=82 tol=20 size=297/194 metric=240 pred=240 target=390 L=15 R=-15 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=325 off=5 tol=20 size=319/197 metric=250 pred=253 target=390 L=50 R=50 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=318 off=-2 tol=20 size=373/191 metric=266 pred=271 target=390 L=50 R=50 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=319 off=-1 tol=20 size=430/175 metric=274 pred=276 target=390 L=49 R=49 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_FORWARD cx=305 off=-15 tol=20 size=416/278 metric=338 pred=355 target=390 L=29 R=29 stable=0
+[GAME] LEKIWI_BUCKET visible=1 label=BUCKET_BRAKE cx=303 off=-17 tol=20 size=465/312 metric=381 pred=381 target=390 L=0 R=0 stable=0
+[PERF] window=10.01s captured=301 processed=301 camera=30.07fps effective=30.07fps busy=57.33fps
+[PERF] frame_ms avg=33.26 p50=34.83 p95=47.84 max=53.24
+[PERF] stage_ms wait=15.82 capture_copy=0.006 jpeg_header=0.018 jpeg_decode=9.91 letterbox_copy=0.296
+[PERF] stage_ms input=0.00 run=0.00 output=0.00 post=0.000 release=0.000 control=0.000 unaccounted=7.22
+[GAME] -> PUT_BALL
+[UvcCapture] paused before PUT_BALL in 33.7 ms
+[GAME] PUT_BALL start safe S-curve place sequence
+[GAME] PUT_BALL step=1/6 place_approach
+[GAME] PUT_BALL step=2/6 place_release
+[GAME] PUT_BALL step=3/6 release_gripper
+[GAME] PUT_BALL step=4/6 place_approach
+[GAME] PUT_BALL step=5/6 carry
+[GAME] PUT_BALL step=6/6 close_gripper
+[GAME] PUT_BALL step=7/6 done
+[UvcCapture] resumed after PUT_BALL in 174.3 ms
+[GAME] PUT_BALL done -> CHASE_BALL
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[PERF] window=10.01s captured=84 processed=84 camera=8.39fps effective=8.39fps busy=9.94fps
+[PERF] frame_ms avg=119.13 p50=32.01 p95=36.07 max=7139.81
+[PERF] stage_ms wait=18.53 capture_copy=0.004 jpeg_header=0.010 jpeg_decode=3.94 letterbox_copy=0.116
+[PERF] stage_ms input=0.14 run=11.17 output=0.06 post=0.012 release=0.000 control=0.103 unaccounted=85.05
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[PERF] window=10.03s captured=301 processed=301 camera=30.01fps effective=30.01fps busy=64.79fps
+[PERF] frame_ms avg=33.33 p50=32.02 p95=36.05 max=36.17
+[PERF] stage_ms wait=17.89 capture_copy=0.004 jpeg_header=0.009 jpeg_decode=3.26 letterbox_copy=0.099
+[PERF] stage_ms input=0.13 run=11.68 output=0.06 post=0.011 release=0.000 control=0.109 unaccounted=0.07
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
+[STATE] LEKIWI_SEARCH label=IDLE L=0 R=0
