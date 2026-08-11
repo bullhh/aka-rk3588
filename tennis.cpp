@@ -174,6 +174,18 @@ static int env_nonnegative_int(const char* name, int default_value) {
     return static_cast<int>(parsed);
 }
 
+static double env_nonnegative_double(const char* name, double default_value) {
+    const char* value = getenv(name);
+    if (!value || !value[0]) return default_value;
+    char* end = nullptr;
+    const double parsed = strtod(value, &end);
+    if (!end || *end != '\0' || !std::isfinite(parsed) || parsed < 0.0) {
+        LOGW("Ignoring invalid %s=%s; using %.2f", name, value, default_value);
+        return default_value;
+    }
+    return parsed;
+}
+
 static uint64_t monotonic_us_now() {
     struct timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -194,6 +206,13 @@ struct PerfSample {
     uint64_t postprocess_us = 0;
     uint64_t rknn_release_us = 0;
     uint64_t control_us = 0;
+};
+
+struct PerfWindowResult {
+    double elapsed_s = 0.0;
+    uint64_t captured = 0;
+    uint64_t processed = 0;
+    double effective_fps = 0.0;
 };
 
 class PerfWindow {
@@ -224,15 +243,17 @@ public:
         totals_.control_us += sample.control_us;
     }
 
-    void maybe_report(const UvcCapture::Stats& capture_stats, bool force = false) {
+    bool maybe_report(const UvcCapture::Stats& capture_stats,
+                      PerfWindowResult* result = nullptr,
+                      bool force = false) {
         if (!initialized_) {
             reset(capture_stats);
-            return;
+            return false;
         }
         const uint64_t now_us = monotonic_us_now();
         const uint64_t elapsed = now_us - start_us_;
-        if (!force && elapsed < window_us_) return;
-        if (elapsed == 0) return;
+        if (!force && elapsed < window_us_) return false;
+        if (elapsed == 0) return false;
 
         const uint64_t processed = samples_.size();
         const uint64_t captured = capture_stats.captured_frames -
@@ -289,10 +310,18 @@ public:
                unaccounted_ms);
         fflush(stdout);
 
+        if (result) {
+            result->elapsed_s = elapsed_s;
+            result->captured = captured;
+            result->processed = processed;
+            result->effective_fps = effective_fps;
+        }
+
         start_us_ = now_us;
         capture_start_ = capture_stats;
         samples_.clear();
         totals_ = PerfSample{};
+        return true;
     }
 
 private:
@@ -432,11 +461,12 @@ static BallView best_ball_view(const std::vector<detection>& dets,
 // ── Usage ─────────────────────────────────────────────────────────────────────
 static void usage(const char* prog) {
     LOGI("Usage:");
-    LOGI("  %s <model.rknn> [uart_dev] [uvc_device_index] [arm_dev] [platform] [--stop-after-chase]", prog);
+    LOGI("  %s <model.rknn> [uart_dev] [uvc_device_index] [arm_dev] [platform] [options]", prog);
     LOGI("  Example legacy: %s tennis.rknn /dev/ttyS3 0 /dev/ttyUSB1", prog);
     LOGI("  Example lekiwi: %s tennis.rknn /dev/ttyACM0 0 /dev/ttyACM0 lekiwi", prog);
     LOGI("  Example lekiwi safe chase test: %s tennis.rknn auto 0 auto lekiwi --stop-after-chase", prog);
     LOGI("  Example bucket/place demo: %s tennis.rknn auto 0 auto lekiwi --bucket-place-demo", prog);
+    LOGI("  Example robot CI flow: %s tennis.rknn auto 0 auto lekiwi --robot-ci-once", prog);
     LOGI("  %s test-uvc   [uvc_index]               -- capture one frame -> capture.jpg", prog);
     LOGI("  %s test-yolo  <model.rknn> [uvc_index]  -- detect one frame  -> result.jpg", prog);
     LOGI("  %s test-motor [uart_dev] [speed=N]       -- motor test", prog);
@@ -547,6 +577,7 @@ int main(int argc, char** argv)
     bool use_lekiwi = (strcmp(platform, "lekiwi") == 0 || strcmp(platform, "omni") == 0);
     bool stop_after_chase = false;
     bool bucket_place_demo = false;
+    bool robot_ci_once = false;
     const char* stop_env = getenv("LEKIWI_STOP_AFTER_CHASE");
     if (stop_env && strcmp(stop_env, "0") != 0 && strcmp(stop_env, "false") != 0)
         stop_after_chase = true;
@@ -563,6 +594,8 @@ int main(int argc, char** argv)
             stop_after_chase = true;
         } else if (strcmp(argv[i], "--bucket-place-demo") == 0) {
             bucket_place_demo = true;
+        } else if (strcmp(argv[i], "--robot-ci-once") == 0) {
+            robot_ci_once = true;
         } else {
             LOGE("Unknown option: %s", argv[i]);
             usage(argv[0]);
@@ -571,6 +604,10 @@ int main(int argc, char** argv)
     }
     if (bucket_place_demo && !use_lekiwi) {
         LOGE("--bucket-place-demo requires platform=lekiwi");
+        return 1;
+    }
+    if (robot_ci_once && !use_lekiwi) {
+        LOGE("--robot-ci-once requires platform=lekiwi");
         return 1;
     }
     const int stop_center_offset = use_lekiwi ? 0 : STOP_CENTER_OFFSET;
@@ -676,6 +713,9 @@ int main(int argc, char** argv)
         if (bucket_place_demo) {
             LOGI("Bucket/place demo enabled: FIND_BUCKET -> APPROACH -> PUT_BALL -> exit");
         }
+        if (robot_ci_once) {
+            LOGI("Robot CI enabled: one simulated pick/place flow with real hardware motion");
+        }
     } else {
         motor_ptr = new Motor(MotorDriverType::UART, uart_dev);
         g_motor = motor_ptr;
@@ -728,16 +768,43 @@ int main(int argc, char** argv)
     }
 
     dup2(g_saved_stderr, STDERR_FILENO);
-    LOGI("Warming up camera (skip 10 frames)...");
+    const int camera_warmup_frames = robot_ci_once ? 30 : 10;
+    if (robot_ci_once)
+        LOGI("Warming up camera (skip %d valid frames)...", camera_warmup_frames);
+    else
+        LOGI("Warming up camera (skip 10 frames)...");
     dup2(g_devnull, STDERR_FILENO);
-    for (int i = 0; i < 10; i++) capture.getFrame(mjpeg_buf, MJPEG_BUF, 500);
+    if (robot_ci_once) {
+        for (int valid = 0; valid < camera_warmup_frames;) {
+            if (capture.getFrame(mjpeg_buf, MJPEG_BUF, 500) > 0) valid++;
+            if (g_stop_requested) {
+                cleanup_and_exit();
+                return 0;
+            }
+        }
+    } else {
+        for (int i = 0; i < camera_warmup_frames; i++)
+            capture.getFrame(mjpeg_buf, MJPEG_BUF, 500);
+    }
 
     const int state_log_interval_ms =
         env_nonnegative_int("AKA_STATE_LOG_INTERVAL_MS", 1000);
     StateLogGate state_log_gate(static_cast<uint64_t>(state_log_interval_ms) * 1000ULL);
     PerfWindow perf_window(10000000ULL);
-    perf_window.reset(capture.stats());
+    if (!robot_ci_once) perf_window.reset(capture.stats());
     LOGI("Performance window=10s; state log interval=%dms", state_log_interval_ms);
+
+    const double robot_ci_min_fps =
+        env_nonnegative_double("ROBOT_CI_MIN_FPS", 12.5);
+    bool robot_ci_perf_started = false;
+    bool robot_ci_perf_start_pending = false;
+    int robot_ci_warmup_inferences = 0;
+    std::vector<PerfWindowResult> robot_ci_perf_results;
+    bool robot_ci_ball_seen = false;
+    bool robot_ci_ball_drive_seen = false;
+    int robot_ci_ball_drive_pulses = 0;
+    bool robot_ci_bucket_drive_seen = false;
+    int robot_ci_bucket_drive_frames = 0;
 
     int  frame_idx    = 0;
     int  proc_cnt     = 0;
@@ -801,14 +868,62 @@ int main(int argc, char** argv)
         {-1.5f, -1.0f},
         {-1.5f, 1.0f},
     };
+    if (robot_ci_once) lekiwi_pick_retry_offsets_cm.resize(1);
     size_t lekiwi_pick_retry_index = 0;
     LeKiwiPickConfig lekiwi_pick_attempt_config = lekiwi_pick_base_config;
 
     // ── Chase loop ────────────────────────────────────────────────────────────
     while (true) {
-        perf_window.maybe_report(capture.stats());
+        if (robot_ci_perf_start_pending) {
+            perf_window.reset(capture.stats());
+            robot_ci_perf_started = true;
+            robot_ci_perf_start_pending = false;
+            dup2(g_saved_stderr, STDERR_FILENO);
+            printf("[ROBOT_CI] PERF_BEGIN windows=2 duration_s=10 min_fps=%.2f\n",
+                   robot_ci_min_fps);
+            dup2(g_devnull, STDERR_FILENO);
+        }
+
+        PerfWindowResult perf_result;
+        const bool perf_window_done =
+            (!robot_ci_once || robot_ci_perf_started) &&
+            perf_window.maybe_report(capture.stats(), &perf_result);
+        if (robot_ci_once && perf_window_done) {
+            robot_ci_perf_results.push_back(perf_result);
+            const size_t index = robot_ci_perf_results.size();
+            dup2(g_saved_stderr, STDERR_FILENO);
+            printf("[ROBOT_CI] PERF_WINDOW index=%zu/2 elapsed_s=%.2f processed=%" PRIu64 " effective_fps=%.2f\n",
+                   index, perf_result.elapsed_s, perf_result.processed,
+                   perf_result.effective_fps);
+            dup2(g_devnull, STDERR_FILENO);
+            if (index == 2) {
+                const double total_s = robot_ci_perf_results[0].elapsed_s +
+                                       robot_ci_perf_results[1].elapsed_s;
+                const uint64_t total_processed = robot_ci_perf_results[0].processed +
+                                                 robot_ci_perf_results[1].processed;
+                const double average_fps = total_s > 0.0
+                    ? total_processed / total_s : 0.0;
+                dup2(g_saved_stderr, STDERR_FILENO);
+                printf("[ROBOT_CI] PERF_SUMMARY windows=2 elapsed_s=%.2f processed=%" PRIu64 " effective_fps=%.2f\n",
+                       total_s, total_processed, average_fps);
+                dup2(g_devnull, STDERR_FILENO);
+                if (average_fps < robot_ci_min_fps) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[ROBOT_CI] ATTEMPT_FAIL reason=performance_summary fps=%.2f threshold=%.2f windows=2\n",
+                           average_fps, robot_ci_min_fps);
+                    cleanup_and_exit();
+                    return 1;
+                }
+                if (!robot_ci_ball_seen) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[ROBOT_CI] BALL_NOT_SEEN windows=2 action=continue_simulated_flow\n");
+                    dup2(g_devnull, STDERR_FILENO);
+                }
+                robot_ci_perf_started = false;
+            }
+        }
         if (g_stop_requested) {
-            perf_window.maybe_report(capture.stats(), true);
+            perf_window.maybe_report(capture.stats(), nullptr, true);
             cleanup_and_exit();
             return 0;
         }
@@ -941,6 +1056,18 @@ int main(int argc, char** argv)
                     printf("[UvcCapture] resumed after PICK_BALL in %.1f ms\n",
                            monotonic_ms_now() - start_ms);
                     dup2(g_devnull, STDERR_FILENO);
+                }
+                if (robot_ci_once) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[ROBOT_CI] PICK_SIMULATED holding=1 reason=fixture_has_no_reachable_ball\n");
+                    dup2(g_devnull, STDERR_FILENO);
+                    lekiwi_arm_ctrl->reset();
+                    lekiwi_move.reset();
+                    lekiwi_pick_retry_index = 0;
+                    game_state = GameState::FIND_BUCKET;
+                    bucket_lost_cnt = 0;
+                    bucket_confirm = 0;
+                    continue;
                 }
                 float gripper_pos = 0.0f;
                 bool gripper_holds = lekiwi_arm_ctrl->verify_grab(&gripper_pos);
@@ -1148,6 +1275,16 @@ int main(int argc, char** argv)
                            monotonic_ms_now() - start_ms);
                     dup2(g_devnull, STDERR_FILENO);
                 }
+                if (robot_ci_once) {
+                    drive_ptr->standby();
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[ROBOT_CI] ATTEMPT_PASS flow=1 perf_windows=2 ball_seen=%d ball_drive=%d bucket_drive=%d safe_stop=1\n",
+                           robot_ci_ball_seen ? 1 : 0,
+                           robot_ci_ball_drive_seen ? 1 : 0,
+                           robot_ci_bucket_drive_seen ? 1 : 0);
+                    cleanup_and_exit();
+                    return 0;
+                }
                 if (bucket_place_demo) {
                     dup2(g_saved_stderr, STDERR_FILENO);
                     printf("[DEMO] bucket/place sequence completed successfully\n");
@@ -1220,6 +1357,19 @@ int main(int argc, char** argv)
                 if (cmd.idle) drive_ptr->standby();
                 else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
 
+                if (robot_ci_once) {
+                    if (!cmd.idle &&
+                        (cmd.left_speed != 0 || cmd.right_speed != 0)) {
+                        robot_ci_bucket_drive_seen = true;
+                        robot_ci_bucket_drive_frames++;
+                    } else if (robot_ci_bucket_drive_frames < 3) {
+                        drive_ptr->drive(8, -8);
+                        robot_ci_bucket_drive_frames++;
+                        robot_ci_bucket_drive_seen =
+                            robot_ci_bucket_drive_frames >= 3;
+                    }
+                }
+
                 const std::string bucket_log_key =
                     std::string("LEKIWI_BUCKET:") + cmd.label + ":" +
                     (bucket_visible ? "1:" : "0:") + (cmd.reached ? "1" : "0");
@@ -1234,7 +1384,17 @@ int main(int argc, char** argv)
                            cmd.left_speed, cmd.right_speed, cmd.reached ? 1 : 0);
                 }
 
-                if (cmd.reached) {
+                const bool robot_ci_bucket_ready =
+                    robot_ci_once && robot_ci_bucket_drive_frames >= 3;
+                if (robot_ci_bucket_ready) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[ROBOT_CI] BUCKET_READY_SIMULATED drive_frames=%d visible=%d\n",
+                           robot_ci_bucket_drive_frames, bucket_visible ? 1 : 0);
+                    dup2(g_devnull, STDERR_FILENO);
+                }
+                const bool bucket_reached = robot_ci_once
+                    ? robot_ci_bucket_ready : cmd.reached;
+                if (bucket_reached) {
                     drive_ptr->standby();
                     game_state = GameState::PUT_BALL;
                     if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
@@ -1342,6 +1502,13 @@ int main(int argc, char** argv)
             detect_run(&rknn_ctx, rgb_buf, model_w, model_h,
                        FRAME_WIDTH, FRAME_HEIGHT, lb_x, lb_y, lb_sc,
                        0.5f, 0.45f, dets, &ti, &tr, &to, &tp, &trel);
+            if (robot_ci_once && !robot_ci_perf_started &&
+                !robot_ci_perf_start_pending && robot_ci_perf_results.empty()) {
+                robot_ci_warmup_inferences++;
+                if (robot_ci_warmup_inferences >= 3) {
+                    robot_ci_perf_start_pending = true;
+                }
+            }
         }
         frame_perf.sample.rknn_input_us += ti;
         frame_perf.sample.rknn_run_us += tr;
@@ -1376,6 +1543,23 @@ int main(int argc, char** argv)
                 if (cmd.idle) drive_ptr->standby();
                 else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
 
+                if (robot_ci_once) {
+                    robot_ci_ball_seen = true;
+                    if (!cmd.idle &&
+                        (cmd.left_speed != 0 || cmd.right_speed != 0)) {
+                        robot_ci_ball_drive_seen = true;
+                    } else if (!robot_ci_ball_drive_seen &&
+                               robot_ci_ball_drive_pulses < 3) {
+                        // The fixture may already place the ball at the stop point.
+                        // Exercise the real chassis at low speed before simulating
+                        // the unavailable pick feedback.
+                        drive_ptr->drive(8, -8);
+                        robot_ci_ball_drive_pulses++;
+                        robot_ci_ball_drive_seen =
+                            robot_ci_ball_drive_pulses >= 3;
+                    }
+                }
+
                 const std::string chase_log_key =
                     std::string("LEKIWI_CHASE:") + cmd.label + ":" +
                     (cmd.reached ? "1" : "0");
@@ -1407,7 +1591,18 @@ int main(int argc, char** argv)
                     }
                 }
 
-                if (cmd.reached) {
+                const bool robot_ci_ready = robot_ci_once &&
+                    robot_ci_perf_results.size() >= 2 &&
+                    robot_ci_ball_seen && robot_ci_ball_drive_seen;
+                if (robot_ci_ready && !cmd.reached) {
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[ROBOT_CI] BALL_READY_SIMULATED perf_windows=%zu ball_seen=1 ball_drive=1\n",
+                           robot_ci_perf_results.size());
+                    dup2(g_devnull, STDERR_FILENO);
+                }
+                const bool ball_reached = robot_ci_once
+                    ? robot_ci_ready : cmd.reached;
+                if (ball_reached) {
                     drive_ptr->standby();
                     game_state = GameState::PICK_BALL;
                     if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
@@ -1594,9 +1789,43 @@ int main(int argc, char** argv)
                 auto cmd = lekiwi_move.update_ball(dets);
                 if (cmd.idle) drive_ptr->standby();
                 else drive_ptr->drive(cmd.left_speed, cmd.right_speed);
+
+                if (robot_ci_once) {
+                    if (!cmd.idle &&
+                        (cmd.left_speed != 0 || cmd.right_speed != 0)) {
+                        robot_ci_ball_drive_seen = true;
+                    } else if (!robot_ci_ball_drive_seen &&
+                               robot_ci_ball_drive_pulses < 3) {
+                        drive_ptr->drive(8, -8);
+                        robot_ci_ball_drive_pulses++;
+                        robot_ci_ball_drive_seen =
+                            robot_ci_ball_drive_pulses >= 3;
+                    }
+                }
+
                 if (state_log_gate.due(std::string("LEKIWI_SEARCH:") + cmd.label)) {
                     printf("[STATE] LEKIWI_SEARCH label=%s L=%d R=%d\n",
                            cmd.label, cmd.left_speed, cmd.right_speed);
+                }
+
+                const bool robot_ci_ready = robot_ci_once &&
+                    robot_ci_perf_results.size() >= 2 &&
+                    robot_ci_ball_drive_seen;
+                if (robot_ci_ready) {
+                    drive_ptr->standby();
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[ROBOT_CI] BALL_READY_SIMULATED perf_windows=%zu ball_seen=0 ball_drive=1\n",
+                           robot_ci_perf_results.size());
+                    dup2(g_devnull, STDERR_FILENO);
+                    game_state = GameState::PICK_BALL;
+                    if (lekiwi_arm_ctrl) lekiwi_arm_ctrl->reset();
+                    lekiwi_move.reset();
+                    lekiwi_pick_base_config.load();
+                    dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[GAME] -> PICK_BALL attempt=%zu/%zu\n",
+                           lekiwi_pick_retry_index + 1,
+                           lekiwi_pick_retry_offsets_cm.size());
+                    dup2(g_devnull, STDERR_FILENO);
                 }
                 finish_control_timing();
                 continue;
