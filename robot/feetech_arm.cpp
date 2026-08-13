@@ -1,4 +1,5 @@
 #include "feetech_arm.hpp"
+#include "robot/feetech_motion_policy.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -35,6 +36,31 @@ void pace_slow_move(double& deadline_ms, int& overrun_warnings) {
     deadline_ms = late_ms > kPeriodMs
         ? now_ms + kPeriodMs : deadline_ms + kPeriodMs;
 }
+
+class FeetechGoalRegisterIo final : public feetech_motion::GoalRegisterIo {
+public:
+    explicit FeetechGoalRegisterIo(feetech::FeetechBus& bus) : bus_(bus) {}
+
+    bool read_goal_position(int id, int& value) override {
+        constexpr int kReadAttempts = 3;
+        for (int attempt = 1; attempt <= kReadAttempts; attempt++) {
+            if (bus_.read_u16(id, feetech::reg::GOAL_POSITION, value, true)) {
+                return true;
+            }
+            if (attempt < kReadAttempts) usleep(20000);
+        }
+        return false;
+    }
+
+    bool write_goal_position(int id, int value) override {
+        return bus_.set_goal_position(id, value);
+    }
+
+    const std::string& last_error() const override { return bus_.last_error(); }
+
+private:
+    feetech::FeetechBus& bus_;
+};
 } // namespace
 
 FeetechArm::FeetechArm(feetech::FeetechBus& bus, const std::string& calibration_path) : bus_(bus) {
@@ -378,6 +404,8 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
     const double move_start_ms = monotonic_ms();
     double next_tick_deadline_ms = move_start_ms;
     int overrun_warnings = 0;
+    int settled_feedback_miss_ticks = 0;
+    bool goal_delivery_checked = false;
     for (int tick = 0; tick < kMaxTicks; tick++) {
         pace_slow_move(next_tick_deadline_ms, overrun_warnings);
         std::map<std::string, float> next;
@@ -405,14 +433,24 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
             return false;
         }
         bool feedback_reached = command_reached;
+        std::map<std::string, float> stalled_pose;
         for (const auto& target : pose) {
             auto joint = joints_.find(target.first);
             // Match the real arm's settled feedback accuracy. Tighter bounds
             // make the controller push continuously against normal static
             // load without improving the visible pose.
             const float tolerance = joint->second.gripper ? 12.0f : 5.0f;
-            if (std::abs(target.second - positions[target.first]) > tolerance) {
+            const JointCalibration* cal = calibration_.get(target.first);
+            const int raw_span = cal ? cal->range_max - cal->range_min : 1;
+            const float logical_span = joint->second.max_deg - joint->second.min_deg;
+            if (!feetech_motion::feedback_within_tolerance(
+                    deg_to_raw(joint->second, target.second),
+                    deg_to_raw(joint->second, positions[target.first]),
+                    tolerance, raw_span, logical_span)) {
                 feedback_reached = false;
+                if (!joint->second.gripper) {
+                    stalled_pose[target.first] = target.second;
+                }
             }
         }
         if (feedback_reached) {
@@ -421,6 +459,18 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
                     (monotonic_ms() - move_start_ms) / 1000.0);
             last_error_.clear();
             return true;
+        }
+
+        if (command_reached && !stalled_pose.empty()) {
+            settled_feedback_miss_ticks++;
+            constexpr int kGoalVerificationDelayTicks = 4;
+            if (!goal_delivery_checked &&
+                settled_feedback_miss_ticks >= kGoalVerificationDelayTicks) {
+                if (!verify_goal_delivery(stalled_pose)) return false;
+                goal_delivery_checked = true;
+            }
+        } else {
+            settled_feedback_miss_ticks = 0;
         }
     }
 
@@ -435,6 +485,47 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
     last_error_ = error.str();
     fprintf(stderr, "[FeetechArm] %s\n", last_error_.c_str());
     return false;
+}
+
+bool FeetechArm::verify_goal_delivery(const std::map<std::string, float>& pose) {
+    std::vector<std::pair<int, int>> goals;
+    for (const auto& target : pose) {
+        auto joint = joints_.find(target.first);
+        if (joint == joints_.end() || joint->second.gripper) continue;
+        goals.push_back({
+            joint->second.id,
+            deg_to_raw(joint->second, target.second),
+        });
+    }
+    if (goals.empty()) {
+        last_error_ = "goal verification failed: no arm joints";
+        return false;
+    }
+
+    FeetechGoalRegisterIo io(bus_);
+    std::vector<feetech_motion::GoalRepair> repairs;
+    std::string error;
+    if (!feetech_motion::verify_or_repair_goal_delivery(
+            io, goals, repairs, error)) {
+        last_error_ = "goal verification failed: " + error;
+        fprintf(stderr, "[FeetechArm] %s\n", last_error_.c_str());
+        return false;
+    }
+
+    if (repairs.empty()) {
+        fprintf(stderr,
+                "[FeetechArm] stalled goal registers match the requested "
+                "values; USB delivery confirmed\n");
+    } else {
+        for (const auto& repair : repairs) {
+            fprintf(stderr,
+                    "[FeetechArm] repaired motor id=%d stale goal "
+                    "raw=%d expected=%d with acknowledged unicast write\n",
+                    repair.id, repair.observed, repair.expected);
+        }
+    }
+    last_error_.clear();
+    return true;
 }
 
 bool FeetechArm::write_pose(const std::map<std::string, float>& pose, int settle_ms) {

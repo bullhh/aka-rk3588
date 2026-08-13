@@ -1000,6 +1000,8 @@ void LeKiwiArmController::reset() {
     step_start_ms_ = 0.0;
     next_tick_deadline_ms_ = 0.0;
     overrun_warnings_ = 0;
+    settled_feedback_miss_ticks_ = 0;
+    goal_delivery_checked_ = false;
     targets_ = {
         {"arm_shoulder_pan", 0.0f},
         {"arm_shoulder_lift", -31.70f},
@@ -1258,6 +1260,8 @@ bool LeKiwiArmController::send_current_targets() {
     }
 
     std::map<std::string, float> action;
+    bool commands_reached = true;
+    bool arm_feedback_stalled = false;
     const float home_arm_step_deg = config_.arm_home_speed_deg_s / 20.0f;
     const float motion_arm_step_deg = 30.0f * config_.arm_speed_scale / 20.0f;
     const float gripper_step_deg = config_.gripper_speed_deg_s / 20.0f;
@@ -1294,6 +1298,11 @@ bool LeKiwiArmController::send_current_targets() {
         const float next = last_command + step;
         action[kv.first] = next;
         commanded_[kv.first] = next;
+        if (std::abs(kv.second - next) > 0.001f) commands_reached = false;
+        if (kv.first != "arm_gripper" &&
+            std::abs(kv.second - current) > 3.0f) {
+            arm_feedback_stalled = true;
+        }
     }
     std::map<std::string, float> servo_action;
     for (const auto& kv : action) {
@@ -1301,6 +1310,20 @@ bool LeKiwiArmController::send_current_targets() {
     }
     if (!arm_.write_degrees(servo_action, 0)) {
         return fail("write current targets failed: " + arm_.last_error());
+    }
+
+    if (commands_reached && arm_feedback_stalled) {
+        settled_feedback_miss_ticks_++;
+        constexpr int kGoalVerificationDelayTicks = 4;
+        if (!goal_delivery_checked_ &&
+            settled_feedback_miss_ticks_ >= kGoalVerificationDelayTicks) {
+            if (!arm_.verify_goal_delivery(servo_action)) {
+                return fail("verify current targets failed: " + arm_.last_error());
+            }
+            goal_delivery_checked_ = true;
+        }
+    } else {
+        settled_feedback_miss_ticks_ = 0;
     }
     return true;
 }
@@ -1746,6 +1769,8 @@ bool LeKiwiArmController::tick() {
         step_initialized_ = false;
         step_hold_ticks_ = 0;
         step_start_ms_ = 0.0;
+        settled_feedback_miss_ticks_ = 0;
+        goal_delivery_checked_ = false;
     }
     if (step_index_ >= sequence_.size()) {
         active_ = false;

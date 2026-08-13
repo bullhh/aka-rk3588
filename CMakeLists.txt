@@ -4,6 +4,20 @@ project(aka_rk3588_tennis)
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(BUILD_TESTING "Build aka-rk3588 unit tests" OFF)
+include(CTest)
+
+if(BUILD_TESTING)
+  add_executable(feetech_motion_policy_test
+      tests/feetech_motion_policy_test.cpp
+      robot/feetech_motion_policy.cpp
+  )
+  target_include_directories(feetech_motion_policy_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME feetech_motion_policy COMMAND feetech_motion_policy_test)
+endif()
+
 # ── Log level ─────────────────────────────────────────────────────────────────
 if(NOT DEFINED LOG_LEVEL)
   set(LOG_LEVEL "INFO")
@@ -83,6 +97,7 @@ if(NATIVE_BUILD)
       feetech/feetech_bus.cpp
       motor/motor.cpp motor/pwm_motor_driver.cpp motor/uart_motor_driver.cpp
       robot/omni_base.cpp robot/feetech_arm.cpp robot/lekiwi_calibration.cpp robot/lekiwi_arm_poses.cpp
+      robot/feetech_motion_policy.cpp
       robot/lekiwi_task_controller.cpp
       capture/uvc_capture.cpp
       detect/detect.cpp
@@ -139,6 +154,7 @@ else()
       feetech/feetech_bus.cpp
       motor/motor.cpp motor/pwm_motor_driver.cpp motor/uart_motor_driver.cpp
       robot/omni_base.cpp robot/feetech_arm.cpp robot/lekiwi_calibration.cpp robot/lekiwi_arm_poses.cpp
+      robot/feetech_motion_policy.cpp
       robot/lekiwi_task_controller.cpp
       capture/uvc_capture.cpp
       detect/detect.cpp

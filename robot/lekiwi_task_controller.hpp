@@ -236,6 +236,8 @@ private:
     double step_start_ms_ = 0.0;
     double next_tick_deadline_ms_ = 0.0;
     int overrun_warnings_ = 0;
+    int settled_feedback_miss_ticks_ = 0;
+    bool goal_delivery_checked_ = false;
     std::map<std::string, float> targets_;
     std::map<std::string, float> observed_;
     std::map<std::string, float> commanded_;
