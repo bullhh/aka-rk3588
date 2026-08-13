@@ -27,6 +27,7 @@ public:
     bool get_joint_degs_allow_gripper_overload(
         std::map<std::string, float>& positions, bool& gripper_overloaded);
     bool write_degrees(const std::map<std::string, float>& pose, int settle_ms = 0);
+    bool verify_goal_delivery(const std::map<std::string, float>& pose);
     bool move_degrees_slow(const std::map<std::string, float>& pose, int settle_ms = 0);
     bool grab_pos();
     bool grab();
