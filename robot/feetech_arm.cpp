@@ -410,7 +410,7 @@ bool FeetechArm::move_degrees_slow(const std::map<std::string, float>& pose, int
             // Match the real arm's settled feedback accuracy. Tighter bounds
             // make the controller push continuously against normal static
             // load without improving the visible pose.
-            const float tolerance = joint->second.gripper ? 12.0f : 3.0f;
+            const float tolerance = joint->second.gripper ? 12.0f : 5.0f;
             if (std::abs(target.second - positions[target.first]) > tolerance) {
                 feedback_reached = false;
             }

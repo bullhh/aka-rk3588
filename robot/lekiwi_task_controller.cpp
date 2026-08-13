@@ -1646,7 +1646,11 @@ bool LeKiwiArmController::step_reached(const Step& step) const {
                                       (target_y - measured_y) *
                                       (target_y - measured_y)) <= 0.020f;
         }
-        if (!geometry_safe) return false;
+        // A joint residual inside the common 5-degree settling tolerance is
+        // already close enough to the commanded pose. Keep the Cartesian
+        // check for larger residuals instead of rejecting a normal static
+        // load at the bucket pose.
+        if (!geometry_safe && max_error > 5.0f) return false;
         if (max_error <= 8.0f) return true;
 
         // Loaded joints may settle with a larger angle residual even when the
@@ -1707,7 +1711,7 @@ bool LeKiwiArmController::step_reached(const Step& step) const {
         auto target = targets_.find(step.joint);
         auto current = observed_.find(step.joint);
         if (target == targets_.end() || current == observed_.end()) return false;
-        float tolerance = step.joint == "arm_gripper" ? 12.0f : 2.0f;
+        float tolerance = step.joint == "arm_gripper" ? 12.0f : 5.0f;
         if (std::abs(target->second - current->second) >= tolerance) return false;
         if (step.kind == Kind::WRIST_FLEX) {
             float arm_error = 0.0f;

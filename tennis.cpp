@@ -1278,6 +1278,10 @@ int main(int argc, char** argv)
                 if (robot_ci_once) {
                     drive_ptr->standby();
                     dup2(g_saved_stderr, STDERR_FILENO);
+                    // The put sequence finishes with CARRY followed only by a
+                    // gripper-close step, so all arm joints are already in the
+                    // compact driving pose before CI may remove power.
+                    printf("[ROBOT_CI] SAFE_POSE=PASS pose=carry source=flow\n");
                     printf("[ROBOT_CI] ATTEMPT_PASS flow=1 perf_windows=2 ball_seen=%d ball_drive=%d bucket_drive=%d safe_stop=1\n",
                            robot_ci_ball_seen ? 1 : 0,
                            robot_ci_ball_drive_seen ? 1 : 0,

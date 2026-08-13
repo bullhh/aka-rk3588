@@ -72,9 +72,39 @@ run_attempt() {
     attempt="$1"
     echo "[ROBOT_CI] ATTEMPT_BEGIN index=${attempt}/2"
     cd "${SCRIPT_DIR}" || return 1
+
+    app_status=0
     "${SCRIPT_DIR}/build/tennis" \
         "${MODEL_PATH}" "${FEETECH_DEV}" "${UVC_INDEX}" \
-        "${FEETECH_DEV}" lekiwi --robot-ci-once
+        "${FEETECH_DEV}" lekiwi --robot-ci-once || app_status=$?
+
+    # A successful flow already ends in CARRY and emits SAFE_POSE=PASS before
+    # returning. On an early failure, reopen the released bus and recover to
+    # that compact pose before retrying or allowing the CI service to finish.
+    if [ "${app_status}" -eq 0 ]; then
+        return 0
+    fi
+
+    sleep 1
+    safe_status=1
+    safe_try=1
+    while [ "${safe_try}" -le 2 ]; do
+        echo "[ROBOT_CI] SAFE_POSE_BEGIN pose=carry try=${safe_try}/2"
+        if "${SCRIPT_DIR}/build/tennis" test-new-arm "${FEETECH_DEV}" task carry; then
+            safe_status=0
+            echo "[ROBOT_CI] SAFE_POSE=PASS pose=carry try=${safe_try}"
+            break
+        fi
+        echo "[ROBOT_CI] SAFE_POSE_RETRY pose=carry try=${safe_try}"
+        safe_try=$((safe_try + 1))
+        [ "${safe_try}" -le 2 ] && sleep 1
+    done
+
+    if [ "${safe_status}" -ne 0 ]; then
+        echo "[ROBOT_CI] SAFE_POSE=FAIL pose=carry attempts=2"
+        return 1
+    fi
+    return "${app_status}"
 }
 
 wait_for_usb || exit 1
