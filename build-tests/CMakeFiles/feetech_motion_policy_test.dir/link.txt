@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/feetech_motion_policy_test.dir/tests/feetech_motion_policy_test.cpp.o CMakeFiles/feetech_motion_policy_test.dir/robot/feetech_motion_policy.cpp.o -o feetech_motion_policy_test 

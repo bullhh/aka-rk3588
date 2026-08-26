@@ -1,0 +1,18 @@
+mainmenu "Orange Pi robot control"
+
+source "Kconfig.zephyr"
+
+config ROBOT_STATUS_EVERY_MESSAGES
+	int "Valid IVC messages per combined status report"
+	default 60
+	range 0 1000000
+	help
+	  Print one combined receive, control-rate and latest-perception status
+	  after this many valid IVC messages. Set to 0 to disable the report.
+
+config ROBOT_CONTROL_ALIVE_LOG
+	bool "Print an independent robot-control alive heartbeat"
+	default n
+	help
+	  Print ZEPHYR_ROBOT_CONTROL_ALIVE every 10 seconds even when no IVC
+	  messages arrive. The combined message-count status is normally enough.

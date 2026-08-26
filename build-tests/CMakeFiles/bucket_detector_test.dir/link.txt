@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/bucket_detector_test.dir/tests/bucket_detector_test.cpp.o CMakeFiles/bucket_detector_test.dir/perception/bucket_detector.cpp.o -o bucket_detector_test 

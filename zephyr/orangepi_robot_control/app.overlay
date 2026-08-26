@@ -1,0 +1,26 @@
+/ {
+	aliases {
+		robot-uart = &uart6;
+	};
+
+	uart6: serial@feb90000 {
+		compatible = "ns16550";
+		reg = <0xfeb90000 0x100>;
+		interrupts = <GIC_SPI 337 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		reg-shift = <2>;
+		/* U-Boot prepares the UART6 fractional parent at 16 MHz.  An
+		 * integer divisor of one then gives the Feetech bus' exact 1 Mbps
+		 * rate, matching the board's working Linux configuration.
+		 */
+		clock-frequency = <16000000>;
+		current-speed = <1000000>;
+		status = "okay";
+	};
+};
+
+/* The fixed control workload needs no dynamic bulk RAM.  Keep Zephyr's own
+ * page-frame ontology small; AxVisor still reserves a 128 MiB isolation slot.
+ */
+&sram0 {
+	reg = <0x40000000 0x00080000>;
+};

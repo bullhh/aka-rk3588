@@ -16,6 +16,15 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}
   )
   add_test(NAME feetech_motion_policy COMMAND feetech_motion_policy_test)
+
+  add_executable(bucket_detector_test
+      tests/bucket_detector_test.cpp
+      perception/bucket_detector.cpp
+  )
+  target_include_directories(bucket_detector_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME bucket_detector COMMAND bucket_detector_test)
 endif()
 
 # ── Log level ─────────────────────────────────────────────────────────────────
@@ -48,6 +57,14 @@ option(NATIVE_BUILD "Build natively on the board using system libraries" OFF)
 set(RKNPU2_SRC
     ${3RD}/yolov8_src/postprocess.cc
     ${3RD}/yolov8_src/rknpu2/yolov8.cc
+)
+
+set(PERCEPTION_SOURCES
+    perception/perception_main.cpp
+    perception/bucket_detector.cpp
+    capture/uvc_capture.cpp
+    detect/detect.cpp
+    ${RKNPU2_SRC}
 )
 
 # ── Common 3rd paths ──────────────────────────────────────────────────────────
@@ -104,7 +121,14 @@ if(NATIVE_BUILD)
       ${RKNPU2_SRC}
   )
 
+  add_executable(tennis-perception ${PERCEPTION_SOURCES})
+
   target_link_directories(tennis PRIVATE
+      ${LIBUVC_LIBRARY_DIRS}
+      ${LIBUSB_LIBRARY_DIRS}
+      ${LIBJPEG_LIBRARY_DIRS}
+  )
+  target_link_directories(tennis-perception PRIVATE
       ${LIBUVC_LIBRARY_DIRS}
       ${LIBUSB_LIBRARY_DIRS}
       ${LIBJPEG_LIBRARY_DIRS}
@@ -119,10 +143,22 @@ if(NATIVE_BUILD)
       ${LIBJPEG_LIBRARIES}
       -lpthread -ldl -lm
   )
+  target_link_libraries(tennis-perception
+      imageutils fileutils imagedrawing
+      ${LIBRKNNRT}
+      ${LIBUVC_LIBRARIES}
+      ${LIBUSB_LIBRARIES}
+      ${LIBJPEG_LIBRARIES}
+      -lpthread -ldl -lm
+  )
 
   # Set RPATH so the binary finds the bundled librknnrt.so at runtime.
   # Deploy the .so alongside the binary (e.g. same directory or ../lib/).
   set_target_properties(tennis PROPERTIES
+      BUILD_RPATH   "${RKNNRT_DIR}/Linux/aarch64"
+      INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib"
+  )
+  set_target_properties(tennis-perception PROPERTIES
       BUILD_RPATH   "${RKNNRT_DIR}/Linux/aarch64"
       INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib"
   )
@@ -161,6 +197,8 @@ else()
       ${RKNPU2_SRC}
   )
 
+  add_executable(tennis-perception ${PERCEPTION_SOURCES})
+
   # Generate empty stub .so so the linker can resolve -luvc etc.
   foreach(STUBLIB uvc usb-1.0 turbojpeg)
       set(STUB_SRC ${CMAKE_CURRENT_BINARY_DIR}/stub_${STUBLIB}.c)
@@ -176,8 +214,14 @@ else()
   endforeach()
   add_custom_target(stub_libs ALL DEPENDS ${STUB_SO_LIST})
   add_dependencies(tennis stub_libs)
+  add_dependencies(tennis-perception stub_libs)
 
   target_link_options(tennis PRIVATE
+      -Wl,--allow-shlib-undefined
+      -Wl,--unresolved-symbols=ignore-all
+      -L${CMAKE_CURRENT_BINARY_DIR}
+  )
+  target_link_options(tennis-perception PRIVATE
       -Wl,--allow-shlib-undefined
       -Wl,--unresolved-symbols=ignore-all
       -L${CMAKE_CURRENT_BINARY_DIR}
@@ -191,7 +235,16 @@ else()
       -Wl,--as-needed
       -lpthread -ldl -lm
   )
+  target_link_libraries(tennis-perception
+      imageutils fileutils imagedrawing
+      ${LIBRKNNRT}
+      -Wl,--no-as-needed
+      -luvc -lusb-1.0 -lturbojpeg
+      -Wl,--as-needed
+      -lpthread -ldl -lm
+  )
 endif()
 
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
 install(TARGETS tennis DESTINATION bin)
+install(TARGETS tennis-perception DESTINATION bin)

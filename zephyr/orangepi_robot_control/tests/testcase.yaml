@@ -1,0 +1,8 @@
+tests:
+  robot_control.timing:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - robot
+      - timing
+      - watchdog

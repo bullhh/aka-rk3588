@@ -51,6 +51,48 @@ capture.jpg
 result.jpg
 ```
 
+## AxVisor 双客户机完整捡球
+
+在 StarryOS+Zephyr 双客户机场景中，StarryOS 只运行摄像头和 RKNN 感知，Zephyr 通过
+IVC 接收结果并独占 UART6、底盘和机械臂。必须先用配套 TGOSKits 配置启动两台客户机，
+再在 StarryOS 中执行：
+
+```bash
+cd /home/orangepi/robot/aka-rk3588-dual
+./run_dual_pick.sh
+```
+
+脚本默认使用摄像头 0、`RKNN_CORE_MASK=0`，每帧向 `/dev/axivc` 发送结果；每 60 条结果打印
+一次帧率和最新识别状态，默认关闭每秒流水线诊断心跳。它与已经运行的 Zephyr 控制客户机
+共同构成完整的找球、抓球、找桶和放球流程。
+
+首次验收必须架空车轮并确认机械臂范围安全：
+
+```bash
+./run_dual_pick_ci_once.sh
+```
+
+该脚本使用真实摄像头和 RKNN 测量两个 10 秒性能窗口，再发送确定性测试场景。通过只能
+证明感知、IVC、车轮命令和机械臂动作序列完成，不能证明车辆地面移动或真实夹球。
+
+运行时默认每累计 60 条结果应看到：
+
+```text
+STARRY_PERCEPTION_STATUS results=... window_s=... inference_fps=... ivc_fps=... sent=... dropped=... seq=... frame=... ball_visible=... ball_confidence_milli=... ball_center=... ball_box=... bucket_visible=... bucket_center=... bucket_box=...
+ZEPHYR_CONTROL_STATUS messages=... window_s=... rx_fps=... control_fps=... coalesced=... seq=... received=... processed=... invalid=... state=...
+```
+
+Starry 状态间隔可通过 `STATUS_EVERY` 修改；排查流水线卡死时可设置
+`PIPELINE_HEARTBEAT=1`，正常运行默认值为 `0`。完整链路正常时，三个帧率应接近且
+`dropped=0`。详细说明见
+`AKA_RK3588_MODIFICATIONS.md` 和 TGOSKits 的 `dual-starry-zephyr/README.md`。
+
+Zephyr 控制应用的构建、产物、运行日志和测试方法见：
+
+```text
+zephyr/orangepi_robot_control/README.md
+```
+
 ## Feetech 总线测试
 
 ```bash

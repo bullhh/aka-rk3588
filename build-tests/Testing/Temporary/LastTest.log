@@ -1,0 +1,33 @@
+Start testing: Aug 25 15:23 CST
+----------------------------------------------------------
+1/2 Testing: feetech_motion_policy
+1/2 Test: feetech_motion_policy
+Command: "/home/szy/work/robot/tripod/axvisor_two/aka-rk3588/build-tests/feetech_motion_policy_test"
+Directory: /home/szy/work/robot/tripod/axvisor_two/aka-rk3588/build-tests
+"feetech_motion_policy" start time: Aug 25 15:23 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"feetech_motion_policy" end time: Aug 25 15:23 CST
+"feetech_motion_policy" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/2 Testing: bucket_detector
+2/2 Test: bucket_detector
+Command: "/home/szy/work/robot/tripod/axvisor_two/aka-rk3588/build-tests/bucket_detector_test"
+Directory: /home/szy/work/robot/tripod/axvisor_two/aka-rk3588/build-tests
+"bucket_detector" start time: Aug 25 15:23 CST
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"bucket_detector" end time: Aug 25 15:23 CST
+"bucket_detector" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Aug 25 15:23 CST
