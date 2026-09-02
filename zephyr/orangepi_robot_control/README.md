@@ -35,6 +35,7 @@ StarryOS 和 Zephyr 共用的通信结构定义在：
 ```text
 axvisor_two/
 ├── aka-rk3588/
+├── ivc-sdk/
 └── tgosimages/
 ```
 
@@ -42,6 +43,7 @@ axvisor_two/
 
 - AKA 保存机器人感知、通信协议、控制状态机、参数和测试；
 - TGOSImages 保存 Zephyr 版本、补丁、SDK、工具链、Orange Pi board 支持和镜像打包流程。
+- ivc-sdk 保存 Starry/Zephyr 共用的 AXIVC v2 API、ring 实现和平台适配。
 
 ## 从 AKA 构建
 
@@ -50,6 +52,15 @@ axvisor_two/
 ```bash
 cd /path/axvisor_two/aka-rk3588
 ./scripts/build_zephyr_control.sh
+```
+
+脚本会优先使用同级 `../ivc-sdk`，不存在时获取最新默认分支。也可以显式指定：
+
+```bash
+./scripts/build_zephyr_control.sh \
+  --tgosimages-dir ../tgosimages \
+  --ivc-sdk-dir ../ivc-sdk \
+  --image-name orangepi-robot-control-sdk
 ```
 
 脚本按以下顺序查找 TGOSImages：

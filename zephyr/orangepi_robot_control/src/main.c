@@ -169,6 +169,7 @@ int main(void)
 	status = robot_controller_init(&controller, &bus);
 	if (status != 0) {
 		feetech_stop_wheels(&bus, "CONTROLLER_INIT_FAILED_STOP");
+		(void)robot_ivc_close(&ivc);
 		return 1;
 	}
 	resettable_watchdog_init(&input_watchdog, input_watchdog_handler,
@@ -193,18 +194,16 @@ int main(void)
 		for (;;) {
 			struct perception_result_v2 result = {0};
 			size_t length = 0U;
-			uint64_t message_sequence = 0U;
 			status = robot_ivc_try_receive(&ivc, &result, sizeof(result),
-					       &length, &message_sequence);
+					       &length);
 			if (status == -EAGAIN) {
 				break;
 			}
-			if (status != 0 || length != sizeof(result) ||
-			    message_sequence != result.sequence || !valid_result(&result)) {
+			if (status != 0 || length != sizeof(result) || !valid_result(&result)) {
 				++invalid;
-				printk("ZEPHYR_IVC_DROP status=%d len=%zu msg_seq=%llu "
-				       "payload_seq=%llu invalid=%llu\n", status, length,
-				       message_sequence, result.sequence, invalid);
+				printk("ZEPHYR_IVC_DROP status=%d len=%zu payload_seq=%llu "
+				       "invalid=%llu\n", status, length, result.sequence,
+				       invalid);
 				continue;
 			}
 			newest = result;

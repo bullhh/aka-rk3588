@@ -72,6 +72,26 @@ cd /home/orangepi/robot/aka-rk3588-dual
 ./run_dual_pick_ci_once.sh
 ```
 
+Linux+Zephyr 双客户机与 StarryOS+Zephyr 双客户机使用同一个感知程序和同一个启动入口。
+`run_dual_pick.sh` 会先检查 `/dev/axivc`：StarryOS 中该设备由内核直接提供，Linux 中如果
+设备不存在则自动加载与当前 Linux 内核匹配的 `axvisor.ko`。将模块放在本目录后直接执行：
+
+```bash
+./run_dual_pick.sh
+./run_dual_pick_ci_once.sh
+```
+
+Linux 旧入口仍保留为兼容别名：
+
+```bash
+./run_dual_pick_linux.sh
+./run_dual_pick_linux_ci_once.sh
+```
+
+这两个脚本不再包含独立逻辑，只转发到 `run_dual_pick.sh`。Linux 可通过
+`AXVISOR_KO=/path/to/axvisor.ko` 指定其他模块，通过 `AXIVC_DEVICE=/dev/axivc` 指定设备。
+启动成功后统一输出 `AXIVC_READY`。
+
 该脚本使用真实摄像头和 RKNN 测量两个 10 秒性能窗口，再发送确定性测试场景。通过只能
 证明感知、IVC、车轮命令和机械臂动作序列完成，不能证明车辆地面移动或真实夹球。
 

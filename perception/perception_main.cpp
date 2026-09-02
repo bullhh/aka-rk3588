@@ -5,6 +5,8 @@
 #include "detect/detect.hpp"
 #include "logger.hpp"
 
+#include <axivc/axivc.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
@@ -12,7 +14,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fcntl.h>
 #include <memory>
 #include <string>
 #include <thread>
@@ -28,6 +29,8 @@ constexpr int kFrameHeight = 480;
 constexpr size_t kMjpegCapacity = 1024 * 1024;
 constexpr int kIvcRetryCount = 5;
 constexpr useconds_t kIvcRetryDelayUs = 1000;
+constexpr uint64_t kDefaultIvcChannelKey = 0x49564301ULL;
+constexpr size_t kDefaultIvcChannelSize = 64 * 1024;
 // Keep crash-reproduction progress visible in the host-side serial capture.
 // At roughly 25-30 FPS this emits one sampled stage trace per second.
 constexpr uint64_t kDebugTraceEveryResults = 30;
@@ -71,16 +74,18 @@ class IvcPublisher {
 public:
     IvcPublisher() = default;
     ~IvcPublisher() {
-        if (fd_ >= 0) close(fd_);
+        if (channel_ != nullptr) axivc_close(channel_);
     }
 
     IvcPublisher(const IvcPublisher&) = delete;
     IvcPublisher& operator=(const IvcPublisher&) = delete;
 
-    bool open_device(const char* path) {
-        fd_ = open(path, O_WRONLY | O_CLOEXEC);
-        if (fd_ < 0) {
-            LOGE("Failed to open AxVisor IVC publisher %s: %s", path, std::strerror(errno));
+    bool open_channel(uint64_t key, size_t channel_size) {
+        channel_ = axivc_publish(key, channel_size);
+        if (channel_ == nullptr) {
+            LOGE("Failed to publish AxVisor IVC channel key=0x%llx size=%zu: %s",
+                 static_cast<unsigned long long>(key), channel_size,
+                 std::strerror(errno));
             return false;
         }
         return true;
@@ -89,21 +94,19 @@ public:
     bool send(const perception::PerceptionResultV2& result, bool& dropped) {
         dropped = false;
         for (int attempt = 0; attempt < kIvcRetryCount; ++attempt) {
-            const ssize_t written = write(fd_, &result, sizeof(result));
-            if (written == static_cast<ssize_t>(sizeof(result))) return true;
-            // The StarryOS axivc device reports a full publisher ring as a
-            // zero-length write.  This is expected while the subscriber is
-            // still completing its cold-boot retry, so handle it exactly like
-            // EAGAIN: retry briefly, then drop this perception frame without
-            // terminating the long-running publisher.
-            if (written == 0 ||
-                (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) {
+            const int status =
+                axivc_send(channel_, &result, sizeof(result), 0);
+            if (status == 0) return true;
+            // The current SDK returns ETIMEDOUT after a non-blocking send to a
+            // full ring, while some backends return EAGAIN.  Both mean that
+            // this perception frame can be retried briefly and then dropped.
+            if (status == -EAGAIN || status == -ETIMEDOUT) {
                 usleep(kIvcRetryDelayUs);
                 continue;
             }
-            LOGE("AxVisor IVC send failed at seq=%llu: %s",
+            LOGE("AxVisor IVC send failed at seq=%llu: %s (%d)",
                  static_cast<unsigned long long>(result.sequence),
-                 written < 0 ? std::strerror(errno) : "short write");
+                 axivc_strerror(status), status);
             return false;
         }
 
@@ -112,7 +115,7 @@ public:
     }
 
 private:
-    int fd_ = -1;
+    axivc_channel_t* channel_ = nullptr;
 };
 
 void signal_handler(int) {
@@ -148,12 +151,21 @@ bool parse_positive_double(const char* value, double& output) {
     return true;
 }
 
+bool parse_u64(const char* value, uint64_t& output) {
+    errno = 0;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(value, &end, 0);
+    if (errno != 0 || end == value || *end != '\0') return false;
+    output = static_cast<uint64_t>(parsed);
+    return true;
+}
+
 void usage(const char* program) {
     std::fprintf(
         stderr,
         "Usage: %s <model.rknn> [uvc-index] [--max-results N] [--report-every N]\n"
         "       [--status-every N] [--pipeline-heartbeat 0|1]\n"
-        "       [--transport stdout|ivc] [--ivc-device PATH]\n"
+        "       [--transport stdout|ivc] [--ivc-key KEY] [--ivc-size BYTES]\n"
         "       [--robot-ci-once] [--min-fps N]\n"
         "  --max-results 0 keeps the perception loop running (default).\n"
         "  --report-every N emits one result per N inferences (default 1).\n"
@@ -161,7 +173,9 @@ void usage(const char* program) {
         "    line every N emitted results; 0 disables it (default 60).\n"
         "  --pipeline-heartbeat 1 prints a pipeline diagnostic every second;\n"
         "    0 disables the diagnostic thread (default 0).\n"
-        "  --transport ivc publishes each result through /dev/axivc.\n"
+        "  --transport ivc publishes each result through the AXIVC SDK.\n"
+        "  --ivc-key KEY selects the channel key (default 0x49564301).\n"
+        "  --ivc-size BYTES selects the channel size (default 65536).\n"
         "  --robot-ci-once measures real perception for 20 seconds, then\n"
         "    publishes a deterministic raised-wheel pick/place validation.\n"
         "  --min-fps N sets the robot-CI perception threshold (default 15).\n",
@@ -333,7 +347,8 @@ int main(int argc, char** argv) {
     bool robot_ci_once = false;
     double robot_ci_min_fps = 15.0;
     std::string transport = "stdout";
-    std::string ivc_device = "/dev/axivc";
+    uint64_t ivc_key = kDefaultIvcChannelKey;
+    uint64_t ivc_size = kDefaultIvcChannelSize;
     int argument = 2;
     if (argument < argc && argv[argument][0] != '-') {
         if (!parse_nonnegative(argv[argument], uvc_index)) {
@@ -377,8 +392,21 @@ int main(int argc, char** argv) {
                 return 2;
             }
             argument += 2;
-        } else if (std::strcmp(argv[argument], "--ivc-device") == 0 && argument + 1 < argc) {
-            ivc_device = argv[argument + 1];
+        } else if (std::strcmp(argv[argument], "--ivc-key") == 0 &&
+                   argument + 1 < argc) {
+            if (!parse_u64(argv[argument + 1], ivc_key)) {
+                LOGE("Invalid --ivc-key value: %s", argv[argument + 1]);
+                return 2;
+            }
+            argument += 2;
+        } else if (std::strcmp(argv[argument], "--ivc-size") == 0 &&
+                   argument + 1 < argc) {
+            if (!parse_u64(argv[argument + 1], ivc_size) ||
+                ivc_size < sizeof(perception::PerceptionResultV2) ||
+                ivc_size > static_cast<uint64_t>(SIZE_MAX)) {
+                LOGE("Invalid --ivc-size value: %s", argv[argument + 1]);
+                return 2;
+            }
             argument += 2;
         } else if (std::strcmp(argv[argument], "--robot-ci-once") == 0) {
             robot_ci_once = true;
@@ -400,7 +428,10 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, signal_handler);
 
     IvcPublisher ivc;
-    if (transport == "ivc" && !ivc.open_device(ivc_device.c_str())) return 1;
+    if (transport == "ivc" &&
+        !ivc.open_channel(ivc_key, static_cast<size_t>(ivc_size))) {
+        return 1;
+    }
 
     rknn_app_context_t rknn_context{};
     if (detect_init(model_path, &rknn_context) != 0) {

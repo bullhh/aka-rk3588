@@ -6,6 +6,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P
 AKA_ROOT=$(cd "${SCRIPT_DIR}/.." && pwd -P)
 TGOSIMAGES_REPO_URL="${TGOSIMAGES_REPO_URL:-https://github.com/rcore-os/tgosimages.git}"
 TGOSIMAGES_DIR="${TGOSIMAGES_DIR:-}"
+IVC_SDK_DIR="${IVC_SDK_DIR:-}"
 FORWARD_ARGS=()
 
 usage() {
@@ -13,7 +14,8 @@ usage() {
 Build the aka-rk3588 Zephyr robot controller with TGOSImages.
 
 Usage:
-  scripts/build_zephyr_control.sh [--tgosimages-dir <path>] [Zephyr options]
+  scripts/build_zephyr_control.sh [--tgosimages-dir <path>]
+      [--ivc-sdk-dir <path>] [Zephyr options]
 
 Resolution order:
   1. --tgosimages-dir
@@ -31,6 +33,11 @@ while [[ $# -gt 0 ]]; do
         --tgosimages-dir)
             [[ $# -ge 2 ]] || { echo "ERROR: --tgosimages-dir needs a path" >&2; exit 2; }
             TGOSIMAGES_DIR="$2"
+            shift 2
+            ;;
+        --ivc-sdk-dir)
+            [[ $# -ge 2 ]] || { echo "ERROR: --ivc-sdk-dir needs a path" >&2; exit 2; }
+            IVC_SDK_DIR="$2"
             shift 2
             ;;
         -h|--help)
@@ -74,4 +81,8 @@ else
     echo "TGOSIMAGES_WORKTREE=clean"
 fi
 
-exec "${ENTRY}" --aka-dir "${AKA_ROOT}" "${FORWARD_ARGS[@]}"
+ENTRY_ARGS=(--aka-dir "${AKA_ROOT}")
+if [[ -n "${IVC_SDK_DIR}" ]]; then
+    ENTRY_ARGS+=(--ivc-sdk-dir "${IVC_SDK_DIR}")
+fi
+exec "${ENTRY}" "${ENTRY_ARGS[@]}" "${FORWARD_ARGS[@]}"

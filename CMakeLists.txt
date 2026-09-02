@@ -67,6 +67,26 @@ set(PERCEPTION_SOURCES
     ${RKNPU2_SRC}
 )
 
+# AXIVC is shared by the StarryOS perception publisher and the Zephyr control
+# guest.  Keep the SDK in its own repository and compile its Linux/StarryOS
+# user library into tennis-perception instead of copying the transport code.
+set(IVC_SDK_DIR "" CACHE PATH "Path to the ivc-sdk checkout")
+if(NOT IVC_SDK_DIR AND DEFINED ENV{IVC_SDK_DIR})
+  set(IVC_SDK_DIR "$ENV{IVC_SDK_DIR}")
+endif()
+if(NOT IVC_SDK_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../ivc-sdk")
+  set(IVC_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../ivc-sdk")
+endif()
+if(NOT EXISTS "${IVC_SDK_DIR}/src/axivc.c" OR
+   NOT EXISTS "${IVC_SDK_DIR}/include/axivc/axivc.h")
+  message(FATAL_ERROR
+    "ivc-sdk not found; set -DIVC_SDK_DIR=/path/to/ivc-sdk or place it next to aka-rk3588")
+endif()
+
+add_library(axivc_sdk STATIC "${IVC_SDK_DIR}/src/axivc.c")
+target_include_directories(axivc_sdk PUBLIC "${IVC_SDK_DIR}/include")
+set_target_properties(axivc_sdk PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+
 # ── Common 3rd paths ──────────────────────────────────────────────────────────
 set(RKNNRT_DIR         ${3RD}/rknpu2)
 set(LIBRKNNRT          ${RKNNRT_DIR}/Linux/aarch64/librknnrt.so)
@@ -244,6 +264,8 @@ else()
       -lpthread -ldl -lm
   )
 endif()
+
+target_link_libraries(tennis-perception axivc_sdk)
 
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
 install(TARGETS tennis DESTINATION bin)
