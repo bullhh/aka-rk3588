@@ -4,6 +4,9 @@
 #include "capture/uvc_capture.hpp"
 #include "detect/detect.hpp"
 #include "logger.hpp"
+#include "protocol/robot_runtime_config_v1.h"
+#include "robot/ivc_publish_retry.hpp"
+#include "robot/lekiwi_runtime_config.hpp"
 
 #include <axivc/axivc.h>
 
@@ -29,6 +32,8 @@ constexpr int kFrameHeight = 480;
 constexpr size_t kMjpegCapacity = 1024 * 1024;
 constexpr int kIvcRetryCount = 5;
 constexpr useconds_t kIvcRetryDelayUs = 1000;
+constexpr int kIvcPublishRetryCount = 50;
+constexpr useconds_t kIvcPublishRetryDelayUs = 100000;
 constexpr uint64_t kDefaultIvcChannelKey = 0x49564301ULL;
 constexpr size_t kDefaultIvcChannelSize = 64 * 1024;
 // Keep crash-reproduction progress visible in the host-side serial capture.
@@ -37,6 +42,9 @@ constexpr uint64_t kDebugTraceEveryResults = 30;
 constexpr uint64_t kSlowIvcWriteMs = 20;
 constexpr uint64_t kRobotCiPerceptionMs = 20000;
 constexpr uint64_t kRobotCiTotalMs = 62000;
+constexpr int kConfigAckTimeoutMs = 1000;
+constexpr int kConfigBeginAckTimeoutMs = 45000;
+constexpr int kConfigRetryCount = 3;
 
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_diag_stop{false};
@@ -69,6 +77,10 @@ const char* diag_stage_name(DiagStage stage) {
 
 static_assert(sizeof(perception::PerceptionResultV2) == 48,
               "PerceptionResultV2 must exactly fill the AxVisor IVC slot");
+static_assert(sizeof(robot_config_message_v1) == 48,
+              "Robot configuration message must exactly fill one AxVisor IVC slot");
+
+uint64_t monotonic_ms();
 
 class IvcPublisher {
 public:
@@ -81,12 +93,25 @@ public:
     IvcPublisher& operator=(const IvcPublisher&) = delete;
 
     bool open_channel(uint64_t key, size_t channel_size) {
-        channel_ = axivc_publish(key, channel_size);
+        int attempts = 0;
+        int last_error = 0;
+        channel_ = retry_ivc_publish(
+            [&]() { return axivc_publish(key, channel_size); },
+            []() { usleep(kIvcPublishRetryDelayUs); },
+            kIvcPublishRetryCount, attempts, last_error);
         if (channel_ == nullptr) {
-            LOGE("Failed to publish AxVisor IVC channel key=0x%llx size=%zu: %s",
+            errno = last_error;
+            LOGE("Failed to publish AxVisor IVC channel key=0x%llx size=%zu "
+                 "attempts=%d: %s",
                  static_cast<unsigned long long>(key), channel_size,
+                 attempts,
                  std::strerror(errno));
             return false;
+        }
+        if (attempts > 1) {
+            std::printf("AXIVC_PUBLISH_RETRY_PASS attempts=%d key=0x%llx\n",
+                        attempts, static_cast<unsigned long long>(key));
+            std::fflush(stdout);
         }
         return true;
     }
@@ -114,7 +139,118 @@ public:
         return true;
     }
 
+    bool sync_config(const robot_runtime_config_v1& config) {
+        const auto* bytes = reinterpret_cast<const uint8_t*>(&config);
+        const uint16_t chunk_count = static_cast<uint16_t>(
+            (sizeof(config) + ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE - 1U) /
+            ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE);
+        const uint32_t crc = robot_config_crc32(&config, sizeof(config));
+        uint32_t session = static_cast<uint32_t>(monotonic_ms()) ^
+                           static_cast<uint32_t>(getpid());
+        if (session == 0U) session = 1U;
+
+        robot_config_message_v1 message{};
+        initialize_config_message(message, ROBOT_CONFIG_BEGIN, session,
+                                  chunk_count, crc);
+        if (!exchange_config_message(message, ROBOT_CONFIG_ACK, 0U)) return false;
+
+        for (uint16_t chunk = 0; chunk < chunk_count; ++chunk) {
+            initialize_config_message(message, ROBOT_CONFIG_CHUNK, session,
+                                      chunk_count, crc);
+            message.chunk_index = chunk;
+            const size_t offset = static_cast<size_t>(chunk) *
+                                  ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE;
+            const size_t remaining = sizeof(config) - offset;
+            message.payload_size = static_cast<uint16_t>(std::min(
+                remaining, static_cast<size_t>(ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE)));
+            std::memcpy(message.payload, bytes + offset, message.payload_size);
+            if (!exchange_config_message(message, ROBOT_CONFIG_ACK,
+                                         static_cast<uint16_t>(chunk + 1U))) {
+                return false;
+            }
+        }
+
+        initialize_config_message(message, ROBOT_CONFIG_COMMIT, session,
+                                  chunk_count, crc);
+        message.chunk_index = chunk_count;
+        if (!exchange_config_message(message, ROBOT_CONFIG_APPLIED,
+                                     chunk_count)) {
+            return false;
+        }
+        std::printf("ROBOT_CONFIG_APPLIED session=%u chunks=%u crc=0x%08x\n",
+                    session, chunk_count, crc);
+        std::printf("AXIVC_BIDIRECTIONAL_PASS tx=%u rx=%u\n",
+                    static_cast<unsigned>(chunk_count + 2U),
+                    static_cast<unsigned>(chunk_count + 2U));
+        std::fflush(stdout);
+        return true;
+    }
+
 private:
+    static void initialize_config_message(robot_config_message_v1& message,
+                                          uint8_t type, uint32_t session,
+                                          uint16_t chunk_count, uint32_t crc) {
+        std::memset(&message, 0, sizeof(message));
+        message.magic = ROBOT_CONFIG_MESSAGE_MAGIC;
+        message.version = ROBOT_CONFIG_MESSAGE_VERSION;
+        message.type = type;
+        message.session_id = session;
+        message.chunk_count = chunk_count;
+        message.config_size = sizeof(robot_runtime_config_v1);
+        message.config_crc32 = crc;
+    }
+
+    bool exchange_config_message(const robot_config_message_v1& message,
+                                 uint8_t expected_type,
+                                 uint16_t expected_next) {
+        for (int attempt = 1; attempt <= kConfigRetryCount; ++attempt) {
+            const int timeout_ms = message.type == ROBOT_CONFIG_BEGIN ?
+                kConfigBeginAckTimeoutMs : kConfigAckTimeoutMs;
+            const int send_status = axivc_send(
+                channel_, &message, sizeof(message), timeout_ms);
+            if (send_status != 0) {
+                LOGE("Robot config send failed type=%u chunk=%u attempt=%d: %s (%d)",
+                     message.type, message.chunk_index, attempt,
+                     axivc_strerror(send_status), send_status);
+                continue;
+            }
+
+            robot_config_message_v1 response{};
+            size_t response_size = 0;
+            const int recv_status = axivc_recv(
+                channel_, &response, sizeof(response), &response_size,
+                timeout_ms);
+            if (recv_status != 0) {
+                LOGW("Robot config ACK timeout type=%u chunk=%u attempt=%d: %s (%d)",
+                     message.type, message.chunk_index, attempt,
+                     axivc_strerror(recv_status), recv_status);
+                continue;
+            }
+            if (response_size != sizeof(response) ||
+                response.magic != ROBOT_CONFIG_MESSAGE_MAGIC ||
+                response.version != ROBOT_CONFIG_MESSAGE_VERSION ||
+                response.session_id != message.session_id ||
+                response.type != expected_type ||
+                response.status != ROBOT_CONFIG_STATUS_OK ||
+                response.chunk_count != expected_next ||
+                response.config_crc32 != message.config_crc32) {
+                LOGE("Robot config ACK invalid type=%u chunk=%u response_type=%u "
+                     "status=%u next=%u size=%zu",
+                     message.type, message.chunk_index, response.type,
+                     response.status, response.chunk_count, response_size);
+                return false;
+            }
+            std::printf("ROBOT_CONFIG_ACK type=%u chunk=%u next=%u attempt=%d\n",
+                        message.type, message.chunk_index,
+                        response.chunk_count, attempt);
+            std::fflush(stdout);
+            return true;
+        }
+        LOGE("Robot config exchange exhausted retries type=%u chunk=%u",
+             message.type, message.chunk_index);
+        return false;
+    }
+
     axivc_channel_t* channel_ = nullptr;
 };
 
@@ -166,6 +302,7 @@ void usage(const char* program) {
         "Usage: %s <model.rknn> [uvc-index] [--max-results N] [--report-every N]\n"
         "       [--status-every N] [--pipeline-heartbeat 0|1]\n"
         "       [--transport stdout|ivc] [--ivc-key KEY] [--ivc-size BYTES]\n"
+        "       [--calibration FILE] [--pick-config FILE]\n"
         "       [--robot-ci-once] [--min-fps N]\n"
         "  --max-results 0 keeps the perception loop running (default).\n"
         "  --report-every N emits one result per N inferences (default 1).\n"
@@ -349,6 +486,8 @@ int main(int argc, char** argv) {
     std::string transport = "stdout";
     uint64_t ivc_key = kDefaultIvcChannelKey;
     uint64_t ivc_size = kDefaultIvcChannelSize;
+    std::string calibration_path = "config/lekiwi_calibration.json";
+    std::string pick_config_path = "config/lekiwi_pick_config.txt";
     int argument = 2;
     if (argument < argc && argv[argument][0] != '-') {
         if (!parse_nonnegative(argv[argument], uvc_index)) {
@@ -417,6 +556,14 @@ int main(int argc, char** argv) {
                 return 2;
             }
             argument += 2;
+        } else if (std::strcmp(argv[argument], "--calibration") == 0 &&
+                   argument + 1 < argc) {
+            calibration_path = argv[argument + 1];
+            argument += 2;
+        } else if (std::strcmp(argv[argument], "--pick-config") == 0 &&
+                   argument + 1 < argc) {
+            pick_config_path = argv[argument + 1];
+            argument += 2;
         } else {
             LOGE("Unknown argument: %s", argv[argument]);
             usage(argv[0]);
@@ -428,9 +575,19 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, signal_handler);
 
     IvcPublisher ivc;
-    if (transport == "ivc" &&
-        !ivc.open_channel(ivc_key, static_cast<size_t>(ivc_size))) {
-        return 1;
+    if (transport == "ivc") {
+        robot_runtime_config_v1 runtime_config{};
+        std::string config_error;
+        if (!build_lekiwi_runtime_config(calibration_path, pick_config_path,
+                                         runtime_config, config_error)) {
+            LOGE("Failed to build robot runtime configuration: %s",
+                 config_error.c_str());
+            return 1;
+        }
+        if (!ivc.open_channel(ivc_key, static_cast<size_t>(ivc_size)) ||
+            !ivc.sync_config(runtime_config)) {
+            return 1;
+        }
     }
 
     rknn_app_context_t rknn_context{};

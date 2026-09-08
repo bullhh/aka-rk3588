@@ -26,14 +26,32 @@ docs/lekiwi_user_manual.md
 
 ## 编译
 
-在 Orange Pi 上执行：
+从仓库根目录执行。脚本在 AArch64 主机上原生构建，在其他架构上使用
+`aarch64-linux-gnu` 工具链交叉构建：
 
 ```bash
-cd /home/orangepi/robot/aka-rk3588
-PKG_CONFIG_PATH=/home/orangepi/miniforge3/envs/rknn/lib/pkgconfig \
-LD_LIBRARY_PATH=/home/orangepi/miniforge3/envs/rknn/lib:$LD_LIBRARY_PATH \
 ./build_rk3588.sh -b Release -l INFO
 ```
+
+构建同时在 `build/dual-runtime/` 生成可直接安装到客户机根文件系统的双客户机运行包：
+
+```text
+dual-runtime/
+├── bin/tennis-perception
+├── lib/librknnrt.so
+├── models/tennis.rknn
+├── config/lekiwi_calibration.json
+├── config/lekiwi_pick_config.txt
+├── run_dual_pick.sh
+├── run_dual_pick_ci_once.sh
+└── SHA256SUMS
+```
+
+`SHA256SUMS` 校验二进制、运行库、模型和启动脚本；`config/` 中的文件是每台机器人
+可独立调整的现场配置，因此不纳入不可变文件校验。
+
+客户机 rootfs 仍需提供兼容的 `libuvc.so.0`、`libturbojpeg.so.0`、C/C++ runtime 和
+USB 支持。Linux 客户机还需要由其内核发布包提供匹配 `uname -r` 的 `axvisor.ko`。
 
 ## 视觉单独测试
 
@@ -55,10 +73,9 @@ result.jpg
 
 在 StarryOS+Zephyr 双客户机场景中，StarryOS 只运行摄像头和 RKNN 感知，Zephyr 通过
 IVC 接收结果并独占 UART6、底盘和机械臂。必须先用配套 TGOSKits 配置启动两台客户机，
-再在 StarryOS 中执行：
+再从已安装的双客户机运行包根目录执行：
 
 ```bash
-cd /home/orangepi/robot/aka-rk3588-dual
 ./run_dual_pick.sh
 ```
 
@@ -66,31 +83,24 @@ cd /home/orangepi/robot/aka-rk3588-dual
 一次帧率和最新识别状态，默认关闭每秒流水线诊断心跳。它与已经运行的 Zephyr 控制客户机
 共同构成完整的找球、抓球、找桶和放球流程。
 
-首次验收必须架空车轮并确认机械臂范围安全：
+两个双客户机脚本都不接受参数。持续运行使用 `run_dual_pick.sh`；首次有限验收必须
+架空车轮并确认机械臂范围安全，然后执行：
 
 ```bash
 ./run_dual_pick_ci_once.sh
 ```
 
-Linux+Zephyr 双客户机与 StarryOS+Zephyr 双客户机使用同一个感知程序和同一个启动入口。
+Linux+Zephyr 与 StarryOS+Zephyr 使用同一个感知程序和同一个启动入口。
 `run_dual_pick.sh` 会先检查 `/dev/axivc`：StarryOS 中该设备由内核直接提供，Linux 中如果
-设备不存在则自动加载与当前 Linux 内核匹配的 `axvisor.ko`。将模块放在本目录后直接执行：
+设备不存在则验证运行包根目录中 `axvisor.ko` 的 `vermagic`，匹配后自动加载。启动成功后
+统一输出 `AXIVC_READY`；Linux 额外输出 `LINUX_AXIVC_READY`。
 
-```bash
-./run_dual_pick.sh
-./run_dual_pick_ci_once.sh
-```
-
-Linux 旧入口仍保留为兼容别名：
-
-```bash
-./run_dual_pick_linux.sh
-./run_dual_pick_linux_ci_once.sh
-```
-
-这两个脚本不再包含独立逻辑，只转发到 `run_dual_pick.sh`。Linux 可通过
-`AXVISOR_KO=/path/to/axvisor.ko` 指定其他模块，通过 `AXIVC_DEVICE=/dev/axivc` 指定设备。
-启动成功后统一输出 `AXIVC_READY`。
+每次启动时，感知客户机还会读取本机的 `config/lekiwi_calibration.json` 和
+`config/lekiwi_pick_config.txt`，把校准后的机械臂姿态和控制参数分成 9 条消息发送到
+同一个 `robot-ivc`。Zephyr 每收到一条即反向确认，全部校验并原子应用后才启动 HOME
+和视觉控制。成功标志为 `ROBOT_CONFIG_APPLIED` 与 `AXIVC_BIDIRECTIONAL_PASS`。感知
+程序退出后，Zephyr 会安全停车并重新等待下一次 publisher，因此无需重启客户机即可
+再次执行同一个入口。
 
 该脚本使用真实摄像头和 RKNN 测量两个 10 秒性能窗口，再发送确定性测试场景。通过只能
 证明感知、IVC、车轮命令和机械臂动作序列完成，不能证明车辆地面移动或真实夹球。
@@ -102,8 +112,8 @@ STARRY_PERCEPTION_STATUS results=... window_s=... inference_fps=... ivc_fps=... 
 ZEPHYR_CONTROL_STATUS messages=... window_s=... rx_fps=... control_fps=... coalesced=... seq=... received=... processed=... invalid=... state=...
 ```
 
-Starry 状态间隔可通过 `STATUS_EVERY` 修改；排查流水线卡死时可设置
-`PIPELINE_HEARTBEAT=1`，正常运行默认值为 `0`。完整链路正常时，三个帧率应接近且
+两个入口固定每 60 条结果输出一次状态，并关闭逐秒流水线心跳。需要其他诊断参数时
+直接运行感知程序，不通过这两个固定入口。完整链路正常时，三个帧率应接近且
 `dropped=0`。详细说明见
 `AKA_RK3588_MODIFICATIONS.md` 和 TGOSKits 的 `dual-starry-zephyr/README.md`。
 

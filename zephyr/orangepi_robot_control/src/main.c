@@ -4,6 +4,7 @@
 #include "ivc_transport.h"
 #include "perception_result_v2.h"
 #include "resettable_watchdog.h"
+#include "robot_config_receiver.h"
 #include "robot_controller.h"
 
 #include <zephyr/device.h>
@@ -20,6 +21,7 @@
 #define ROBOT_UART_NODE DT_ALIAS(robot_uart)
 #define ARM_INTERPOLATION_PERIOD_MS 50U
 #define IVC_IDLE_POLL_MS 1U
+#define IVC_RECONNECT_IDLE_MS 1500U
 #define STARTUP_SETTLE_MS 30000U
 #define HEARTBEAT_MS 10000U
 #define FEETECH_UART_BAUD 1000000U
@@ -40,6 +42,69 @@ static uint64_t arm_cycles;
 static uint32_t max_arm_timer_late_ms;
 
 BUILD_ASSERT(sizeof(struct perception_result_v2) == 48U);
+BUILD_ASSERT(sizeof(struct robot_config_message_v1) == 48U);
+
+static int receive_initial_config(struct robot_ivc *ivc,
+				  struct robot_config_receiver *receiver,
+				  struct robot_runtime_config_v1 *config)
+{
+	uint64_t idle_polls = 0U;
+
+	printk("ZEPHYR_ROBOT_CONFIG_WAIT source=axvisor-ivc\n");
+	for (;;) {
+		struct robot_config_message_v1 message = {0};
+		struct robot_config_message_v1 response = {0};
+		size_t length = 0U;
+		int status = robot_ivc_try_receive(ivc, &message, sizeof(message), &length);
+
+		if (status == -EAGAIN) {
+			if (++idle_polls % 1000U == 0U) {
+				printk("ZEPHYR_ROBOT_CONFIG_WAIT polls=%llu\n", idle_polls);
+			}
+			k_msleep(IVC_IDLE_POLL_MS);
+			continue;
+		}
+		if (status != 0) {
+			printk("ZEPHYR_ROBOT_CONFIG_FAILED reason=receive status=%d\n",
+			       status);
+			return status;
+		}
+		if (!robot_config_is_message(&message, length)) {
+			printk("ZEPHYR_ROBOT_CONFIG_DROP reason=expected-config len=%zu\n",
+			       length);
+			continue;
+		}
+
+		bool applied = false;
+		robot_config_receiver_handle(receiver, &message, &response, config,
+					     &applied);
+		if (applied) {
+			robot_config_receiver_mark_applied(receiver);
+		}
+		status = robot_ivc_send(ivc, &response, sizeof(response), 500);
+		if (status != 0) {
+			printk("ZEPHYR_ROBOT_CONFIG_FAILED reason=ack-send chunk=%u "
+			       "status=%d\n", message.chunk_index, status);
+			return status;
+		}
+		if (response.type == ROBOT_CONFIG_REJECTED) {
+			printk("ZEPHYR_ROBOT_CONFIG_REJECTED session=%u chunk=%u "
+			       "status=%u expected=%u\n", response.session_id,
+			       response.chunk_index, response.status,
+			       response.chunk_count);
+		} else if (applied) {
+			printk("ZEPHYR_ROBOT_CONFIG_APPLIED session=%u chunks=%u "
+			       "crc=0x%08x speed_level=%u\n", response.session_id,
+			       response.chunk_count, response.config_crc32,
+			       config->motion_speed_level);
+			return 0;
+		} else {
+			printk("ZEPHYR_ROBOT_CONFIG_ACK session=%u chunk=%u "
+			       "next=%u\n", response.session_id,
+			       response.chunk_index, response.chunk_count);
+		}
+	}
+}
 
 static void input_watchdog_handler(void *context)
 {
@@ -106,6 +171,8 @@ int main(void)
 {
 	struct feetech_bus bus = {0};
 	struct robot_ivc ivc = {0};
+	struct robot_config_receiver config_receiver;
+	struct robot_runtime_config_v1 runtime_config;
 	uint16_t initial_arm[FEETECH_ARM_COUNT];
 	uint64_t received = 0U;
 	uint64_t processed = 0U;
@@ -166,7 +233,15 @@ int main(void)
 		printk("ZEPHYR_ROBOT_CONTROL_FAILED reason=ivc-subscribe status=%d\n", status);
 		return 1;
 	}
-	status = robot_controller_init(&controller, &bus);
+	robot_config_receiver_init(&config_receiver);
+	status = receive_initial_config(&ivc, &config_receiver, &runtime_config);
+	if (status != 0) {
+		feetech_stop_wheels(&bus, "CONFIG_FAILED_STOP");
+		feetech_arm_torque_off(&bus);
+		(void)robot_ivc_close(&ivc);
+		return 1;
+	}
+	status = robot_controller_init(&controller, &bus, &runtime_config);
 	if (status != 0) {
 		feetech_stop_wheels(&bus, "CONTROLLER_INIT_FAILED_STOP");
 		(void)robot_ivc_close(&ivc);
@@ -188,25 +263,101 @@ int main(void)
 	for (;;) {
 		struct perception_result_v2 newest;
 		bool have_newest = false;
+		bool transport_disconnected = false;
 		const uint64_t received_before_poll = received;
 		const uint64_t processed_before_poll = processed;
 
 		for (;;) {
-			struct perception_result_v2 result = {0};
+			union {
+				struct perception_result_v2 perception;
+				struct robot_config_message_v1 config;
+				uint8_t bytes[ROBOT_CONFIG_MESSAGE_SIZE];
+			} message = {0};
 			size_t length = 0U;
-			status = robot_ivc_try_receive(&ivc, &result, sizeof(result),
+			status = robot_ivc_try_receive(&ivc, message.bytes,
+					       sizeof(message.bytes),
 					       &length);
 			if (status == -EAGAIN) {
 				break;
 			}
-			if (status != 0 || length != sizeof(result) || !valid_result(&result)) {
+			if (status != 0) {
 				++invalid;
-				printk("ZEPHYR_IVC_DROP status=%d len=%zu payload_seq=%llu "
-				       "invalid=%llu\n", status, length, result.sequence,
+				printk("ZEPHYR_IVC_DROP status=%d len=%zu invalid=%llu\n",
+				       status, length,
 				       invalid);
+				transport_disconnected = true;
+				break;
+			}
+			if (robot_config_is_message(message.bytes, length)) {
+				struct robot_config_message_v1 response = {0};
+				struct robot_runtime_config_v1 candidate = {0};
+				bool applied = false;
+				bool ready = true;
+
+				if (message.config.type == ROBOT_CONFIG_BEGIN) {
+					k_mutex_lock(&controller_lock, K_FOREVER);
+					ready = robot_controller_prepare_config_update(&controller);
+					k_mutex_unlock(&controller_lock);
+				}
+				if (!ready) {
+					robot_config_make_rejected(
+						&message.config, &response,
+						ROBOT_CONFIG_STATUS_BUSY,
+						config_receiver.expected_chunk);
+				} else {
+					robot_config_receiver_handle(
+						&config_receiver, &message.config, &response,
+						&candidate, &applied);
+				}
+				if (applied) {
+					k_mutex_lock(&controller_lock, K_FOREVER);
+					status = robot_controller_apply_config(&controller,
+									       &candidate);
+					k_mutex_unlock(&controller_lock);
+					if (status != 0) {
+						robot_config_make_rejected(
+							&message.config, &response,
+							ROBOT_CONFIG_STATUS_BUSY,
+								config_receiver.expected_chunk);
+						applied = false;
+					} else {
+						robot_config_receiver_mark_applied(
+							&config_receiver);
+					}
+				}
+				status = robot_ivc_send(&ivc, &response,
+							sizeof(response), 500);
+				if (status != 0) {
+					printk("ZEPHYR_ROBOT_CONFIG_FAILED reason=ack-send "
+					       "chunk=%u status=%d\n",
+					       message.config.chunk_index, status);
+				} else if (applied) {
+					printk("ZEPHYR_ROBOT_CONFIG_APPLIED session=%u "
+					       "chunks=%u crc=0x%08x speed_level=%u "
+					       "restart=1\n", response.session_id,
+					       response.chunk_count, response.config_crc32,
+					       candidate.motion_speed_level);
+				} else if (response.type == ROBOT_CONFIG_REJECTED) {
+					printk("ZEPHYR_ROBOT_CONFIG_REJECTED session=%u "
+					       "chunk=%u status=%u expected=%u\n",
+					       response.session_id, response.chunk_index,
+					       response.status, response.chunk_count);
+				} else {
+					printk("ZEPHYR_ROBOT_CONFIG_ACK session=%u chunk=%u "
+					       "next=%u restart=1\n", response.session_id,
+					       response.chunk_index, response.chunk_count);
+				}
 				continue;
 			}
-			newest = result;
+			if (length != sizeof(message.perception) ||
+			    !valid_result(&message.perception)) {
+				++invalid;
+				printk("ZEPHYR_IVC_DROP status=0 len=%zu payload_seq=%llu "
+				       "invalid=%llu\n", length,
+				       message.perception.sequence, invalid);
+				continue;
+			}
+			newest = message.perception;
 			have_newest = true;
 			++received;
 		}
@@ -284,6 +435,51 @@ int main(void)
 				status_window_started_ms = now_ms;
 				status_window_started_received = received;
 				status_window_started_processed = processed;
+			}
+		}
+		if (!have_newest) {
+			bool reconnect = false;
+			k_mutex_lock(&controller_lock, K_FOREVER);
+			if ((transport_disconnected ||
+			     (received > 0U &&
+			      now_ms - controller.last_input_ms >= IVC_RECONNECT_IDLE_MS))) {
+				reconnect = robot_controller_prepare_config_update(&controller);
+			}
+			k_mutex_unlock(&controller_lock);
+			if (reconnect) {
+				resettable_watchdog_stop(&input_watchdog);
+				printk("ZEPHYR_IVC_RECONNECT reason=%s elapsed_ms=%lld\n",
+				       transport_disconnected ? "transport-error" : "publisher-idle",
+				       now_ms - controller.last_input_ms);
+				(void)robot_ivc_close(&ivc);
+				status = robot_ivc_subscribe(&ivc);
+				if (status != 0) {
+					printk("ZEPHYR_ROBOT_CONTROL_FAILED reason=ivc-reconnect "
+					       "status=%d\n", status);
+					return 1;
+				}
+				robot_config_receiver_init(&config_receiver);
+				status = receive_initial_config(&ivc, &config_receiver,
+							&runtime_config);
+				if (status != 0) {
+					printk("ZEPHYR_ROBOT_CONTROL_FAILED reason=config-reconnect "
+					       "status=%d\n", status);
+					return 1;
+				}
+				k_mutex_lock(&controller_lock, K_FOREVER);
+				status = robot_controller_apply_config(&controller,
+							       &runtime_config);
+				k_mutex_unlock(&controller_lock);
+				if (status != 0) {
+					printk("ZEPHYR_ROBOT_CONTROL_FAILED reason=config-apply-reconnect "
+					       "status=%d\n", status);
+					return 1;
+				}
+				printk("ZEPHYR_IVC_RECONNECTED config_crc=0x%08x\n",
+				       robot_config_crc32(&runtime_config,
+						  sizeof(runtime_config)));
+				status_window_active = false;
+				continue;
 			}
 		}
 		if (IS_ENABLED(CONFIG_ROBOT_CONTROL_ALIVE_LOG) &&

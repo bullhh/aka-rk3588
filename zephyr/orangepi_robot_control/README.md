@@ -19,6 +19,8 @@ Feetech 车轮和机械臂。
 - 机械臂使用独立的 50 ms 插值任务；
 - 连续约 350 ms 没有有效输入时停止底盘；
 - 提供 Zephyr Shell、心跳、控制帧率和诊断日志。
+- 启动时通过同一个双向 IVC 通道逐条确认并加载感知客户机发送的校准/抓取配置；不再
+  把某一台机器人的机械臂 raw 姿态固化在 Zephyr 镜像中。
 
 StarryOS 和 Zephyr 共用的通信结构定义在：
 
@@ -28,29 +30,23 @@ StarryOS 和 Zephyr 共用的通信结构定义在：
 
 修改消息布局时不要在两端分别复制结构体，应修改公共头文件并升级协议版本。
 
-## 推荐目录布局
+## 仓库关系
 
-默认脚本假设 AKA 和 TGOSImages 是同级仓库：
+`aka-rk3588`、`ivc-sdk` 和 `tgosimages` 是独立 Git 仓库，不要求使用固定的父目录名称或
+本地 checkout 布局。默认脚本会优先发现同级的同名 checkout，也允许通过参数显式指定。
 
 ```text
-axvisor_two/
-├── aka-rk3588/
-├── ivc-sdk/
-└── tgosimages/
+aka-rk3588/   # 感知、公共协议、控制状态机、参数和测试
+ivc-sdk/      # Starry/Linux/Zephyr 共用 AXIVC v2 实现
+tgosimages/   # Zephyr 版本、补丁、工具链、board 和镜像构建
 ```
-
-其中：
-
-- AKA 保存机器人感知、通信协议、控制状态机、参数和测试；
-- TGOSImages 保存 Zephyr 版本、补丁、SDK、工具链、Orange Pi board 支持和镜像打包流程。
-- ivc-sdk 保存 Starry/Zephyr 共用的 AXIVC v2 API、ring 实现和平台适配。
 
 ## 从 AKA 构建
 
 在 AKA 根目录执行：
 
 ```bash
-cd /path/axvisor_two/aka-rk3588
+# 在 aka-rk3588 仓库根目录执行
 ./scripts/build_zephyr_control.sh
 ```
 
@@ -58,8 +54,8 @@ cd /path/axvisor_two/aka-rk3588
 
 ```bash
 ./scripts/build_zephyr_control.sh \
-  --tgosimages-dir ../tgosimages \
-  --ivc-sdk-dir ../ivc-sdk \
+  --tgosimages-dir <tgosimages-checkout> \
+  --ivc-sdk-dir <ivc-sdk-checkout> \
   --image-name orangepi-robot-control-sdk
 ```
 
@@ -74,7 +70,7 @@ cd /path/axvisor_two/aka-rk3588
 
 ```bash
 ./scripts/build_zephyr_control.sh \
-  --tgosimages-dir /path/to/tgosimages
+  --tgosimages-dir <tgosimages-checkout>
 ```
 
 指定独立产物名称：
@@ -92,15 +88,17 @@ cd /path/axvisor_two/aka-rk3588
 也可以从 TGOSImages 侧进入同一构建流程：
 
 ```bash
-cd /path/axvisor_two/tgosimages
-./scripts/apps/aka-rk3588-zephyr.sh
+# 在 tgosimages 仓库根目录执行
+./scripts/apps/aka-rk3588-zephyr.sh \
+  --image-name orangepi-robot-control-sdk
 ```
 
 非同级目录可显式指定 AKA：
 
 ```bash
 ./scripts/apps/aka-rk3588-zephyr.sh \
-  --aka-dir /path/to/aka-rk3588
+  --aka-dir <aka-rk3588-checkout> \
+  --image-name orangepi-robot-control-sdk
 ```
 
 两个入口最终构建的都是本目录，不存在两份 Zephyr 控制源码。
@@ -110,23 +108,23 @@ cd /path/axvisor_two/tgosimages
 默认产物位于 TGOSImages：
 
 ```text
-IMAGES/orangepi/zephyr/orangepi-5-plus
-IMAGES/orangepi/zephyr/orangepi-5-plus.elf
-IMAGES/orangepi/zephyr/orangepi-5-plus.dtb
+IMAGES/orangepi/zephyr/orangepi-robot-control-sdk
+IMAGES/orangepi/zephyr/orangepi-robot-control-sdk.elf
+IMAGES/orangepi/zephyr/orangepi-robot-control-sdk.dtb
 ```
 
 含义：
 
 | 文件 | 用途 |
 | --- | --- |
-| `orangepi-5-plus` | Zephyr 客户机 BIN，供 AxVisor 加载 |
-| `orangepi-5-plus.elf` | 带符号 ELF，用于反汇编和调试 |
-| `orangepi-5-plus.dtb` | 本次 Zephyr 构建生成的设备树 |
+| `orangepi-robot-control-sdk` | Zephyr 客户机 BIN，供 AxVisor 加载 |
+| `orangepi-robot-control-sdk.elf` | 带符号 ELF，用于反汇编和调试 |
+| `orangepi-robot-control-sdk.dtb` | 本次 Zephyr 构建生成的设备树 |
 
 确认构建的是正式控制应用：
 
 ```bash
-strings ../tgosimages/IMAGES/orangepi/zephyr/orangepi-5-plus.elf \
+strings IMAGES/orangepi/zephyr/orangepi-robot-control-sdk.elf \
   | rg ZEPHYR_ROBOT_CONTROL_START
 ```
 
@@ -148,6 +146,20 @@ StarryOS 侧随后运行：
 ```bash
 ./run_dual_pick.sh
 ```
+
+该命令先读取共享根文件系统中的 `config/lekiwi_calibration.json` 和
+`config/lekiwi_pick_config.txt`，发送 9 个配置分片。Zephyr 对 BEGIN、每个分片和 COMMIT
+逐条回复，CRC 和范围检查通过后输出：
+
+```text
+ZEPHYR_ROBOT_CONFIG_APPLIED ...
+ROBOT_CONFIG_APPLIED ...
+AXIVC_BIDIRECTIONAL_PASS tx=11 rx=11
+```
+
+配置仅作为 Zephyr 内存中的运行副本；持久来源仍是上述两个配置文件。修改文件后重新
+执行 `run_dual_pick.sh` 即可。旧 publisher 退出并触发安全停车后，Zephyr 会释放旧订阅
+并等待下一次运行，不需要重启 AxVisor 或 Zephyr。
 
 Zephyr 默认每收到 60 条有效感知结果后，将接收频率、控制频率、latest-wins 统计和最新
 识别结果合并输出，例如：
@@ -175,12 +187,11 @@ ZEPHYR_CONTROL_STATUS messages=60 window_s=2.83 rx_fps=21.20 control_fps=21.20 c
 先至少成功运行一次 TGOSImages Zephyr 构建，以准备 Zephyr 源码和 Python 环境，然后执行：
 
 ```bash
-cd /path/axvisor_two/tgosimages
-
+# 在 tgosimages 仓库根目录执行，并先设置 AKA_RK3588_DIR 和 ZEPHYR_PYTHON
 ZEPHYR_BASE="$PWD/build/zephyr" \
 ZEPHYR_TOOLCHAIN_VARIANT=host \
-/tmp/zephyr-pyenv/bin/python build/zephyr/scripts/twister \
-  -T ../aka-rk3588/zephyr/orangepi_robot_control/tests \
+"${ZEPHYR_PYTHON}" build/zephyr/scripts/twister \
+  -T "${AKA_RK3588_DIR}/zephyr/orangepi_robot_control/tests" \
   -p native_sim/native/64
 ```
 
@@ -190,6 +201,8 @@ ZEPHYR_TOOLCHAIN_VARIANT=host \
 - 机械臂插值只在独立周期内推进；
 - 输入看门狗可重置且只触发一次；
 - 输入超时停车后，新输入能够恢复控制。
+- 配置分片逐条确认、重复分片幂等和 COMMIT 后应用；
+- 控制器拒绝配置时 COMMIT 保持可重试，不会缓存虚假的 APPLIED。
 
 这些 host 测试不覆盖真实 IVC、UART6、舵机供电、车轮方向或机械结构。
 

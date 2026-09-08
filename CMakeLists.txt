@@ -25,6 +25,30 @@ if(BUILD_TESTING)
       ${CMAKE_CURRENT_SOURCE_DIR}
   )
   add_test(NAME bucket_detector COMMAND bucket_detector_test)
+
+  add_executable(robot_runtime_config_test
+      tests/robot_runtime_config_test.cpp
+      robot/lekiwi_runtime_config.cpp
+      robot/lekiwi_calibration.cpp
+      zephyr/orangepi_robot_control/src/robot_config_receiver.c
+  )
+  target_include_directories(robot_runtime_config_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/protocol
+      ${CMAKE_CURRENT_SOURCE_DIR}/zephyr/orangepi_robot_control/src
+  )
+  target_compile_definitions(robot_runtime_config_test PRIVATE
+      AKA_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  add_test(NAME robot_runtime_config COMMAND robot_runtime_config_test)
+
+  add_executable(ivc_publish_retry_test
+      tests/ivc_publish_retry_test.cpp
+  )
+  target_include_directories(ivc_publish_retry_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(NAME ivc_publish_retry COMMAND ivc_publish_retry_test)
 endif()
 
 # ── Log level ─────────────────────────────────────────────────────────────────
@@ -62,6 +86,8 @@ set(RKNPU2_SRC
 set(PERCEPTION_SOURCES
     perception/perception_main.cpp
     perception/bucket_detector.cpp
+    robot/lekiwi_runtime_config.cpp
+    robot/lekiwi_calibration.cpp
     capture/uvc_capture.cpp
     detect/detect.cpp
     ${RKNPU2_SRC}
@@ -223,10 +249,18 @@ else()
   foreach(STUBLIB uvc usb-1.0 turbojpeg)
       set(STUB_SRC ${CMAKE_CURRENT_BINARY_DIR}/stub_${STUBLIB}.c)
       set(STUB_SO  ${CMAKE_CURRENT_BINARY_DIR}/lib${STUBLIB}.so)
+      if(STUBLIB STREQUAL "uvc")
+          set(STUB_SONAME libuvc.so.0)
+      elseif(STUBLIB STREQUAL "usb-1.0")
+          set(STUB_SONAME libusb-1.0.so.0)
+      else()
+          set(STUB_SONAME libturbojpeg.so.0)
+      endif()
       file(WRITE ${STUB_SRC} "/* stub */\n")
       add_custom_command(
           OUTPUT  ${STUB_SO}
-          COMMAND ${CMAKE_C_COMPILER} -shared -fPIC -o ${STUB_SO} ${STUB_SRC}
+          COMMAND ${CMAKE_C_COMPILER} -shared -fPIC
+                  -Wl,-soname,${STUB_SONAME} -o ${STUB_SO} ${STUB_SRC}
           DEPENDS ${STUB_SRC}
           COMMENT "Generating stub lib${STUBLIB}.so"
       )
@@ -269,4 +303,30 @@ target_link_libraries(tennis-perception axivc_sdk)
 
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
 install(TARGETS tennis DESTINATION bin)
-install(TARGETS tennis-perception DESTINATION bin)
+set_target_properties(tennis-perception PROPERTIES
+    INSTALL_RPATH "$ORIGIN/../lib"
+)
+install(TARGETS tennis-perception
+    RUNTIME DESTINATION bin
+    COMPONENT dual-runtime
+)
+install(FILES 3rd/rknpu2/Linux/aarch64/librknnrt.so
+    DESTINATION lib
+    COMPONENT dual-runtime
+)
+install(FILES models/tennis.rknn
+    DESTINATION models
+    COMPONENT dual-runtime
+)
+install(FILES
+    config/lekiwi_calibration.json
+    config/lekiwi_pick_config.txt
+    DESTINATION config
+    COMPONENT dual-runtime
+)
+install(PROGRAMS
+    run_dual_pick.sh
+    run_dual_pick_ci_once.sh
+    DESTINATION .
+    COMPONENT dual-runtime
+)

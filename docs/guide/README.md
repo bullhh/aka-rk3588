@@ -10,6 +10,7 @@
 2. [用户态程序使用、测试与调参](configuration-and-tuning.md) — 编译、Linux/StarryOS运行、单项测试和实机调参
 3. [程序运行与控制原理](runtime-architecture.md) — 图像到动作的完整链路、状态机和控制机制
 4. [性能与实测数据](performance.md) — 四种运行环境的同版本数据与瓶颈分析
+5. [StarryOS 原生与 AxVisor 单客户机复现](reproduction-starry-native-single-guest.md) — 在另一台机器人上从主线 `dev` 复现构建、部署和运行
 
 同一份用户态程序、模型和动作配置可用于 Linux、StarryOS，以及二者作为 AxVisor
 客户机的环境。

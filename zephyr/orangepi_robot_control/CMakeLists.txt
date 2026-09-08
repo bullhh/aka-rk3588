@@ -7,6 +7,7 @@ target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../../protocol)
 target_sources(app PRIVATE
   src/main.c
   src/ivc_transport.c
+  src/robot_config_receiver.c
   src/feetech_bus.c
   src/robot_controller.c
   src/resettable_watchdog.c

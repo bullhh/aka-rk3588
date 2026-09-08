@@ -57,6 +57,8 @@ echo ""
 BUILD_DIR="${SCRIPT_DIR}/build"
 mkdir -p "${BUILD_DIR}"
 OUTPUT="${BUILD_DIR}/tennis"
+PERCEPTION_OUTPUT="${BUILD_DIR}/tennis-perception"
+DUAL_RUNTIME_DIR="${BUILD_DIR}/dual-runtime"
 
 cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
@@ -79,8 +81,33 @@ if [ ! -s "${OUTPUT}" ]; then
     echo "ERROR: build output is missing or empty: ${OUTPUT}" >&2
     exit 1
 fi
+if [ ! -s "${PERCEPTION_OUTPUT}" ]; then
+    echo "ERROR: perception build output is missing or empty: ${PERCEPTION_OUTPUT}" >&2
+    exit 1
+fi
+
+cmake -E remove_directory "${DUAL_RUNTIME_DIR}"
+cmake --install "${BUILD_DIR}" \
+    --prefix "${DUAL_RUNTIME_DIR}" \
+    --component dual-runtime
+
+if [ ! -x "${DUAL_RUNTIME_DIR}/bin/tennis-perception" ]; then
+    echo "ERROR: staged dual-guest runtime is incomplete: ${DUAL_RUNTIME_DIR}" >&2
+    exit 1
+fi
+
+(
+    cd "${DUAL_RUNTIME_DIR}"
+    # Calibration and pick configuration are deliberately mutable per robot.
+    # Keep them in the package as defaults, but do not make a valid deployed
+    # package fail integrity checks after an operator calibrates the robot.
+    find . -type f ! -name SHA256SUMS ! -path './config/*' -print0 \
+        | sort -z \
+        | xargs -0 sha256sum >SHA256SUMS
+)
 
 echo ""
 echo "=== Build done: ${BUILD_DIR}/tennis ==="
 stat -c "    Size: %s bytes" "${OUTPUT}"
-echo "    Deploy: scp ${BUILD_DIR}/tennis root@<board_ip>:/root/"
+echo "=== Dual-guest runtime staged: ${DUAL_RUNTIME_DIR} ==="
+find "${DUAL_RUNTIME_DIR}" -maxdepth 2 -type f -printf '    %P\n' | sort

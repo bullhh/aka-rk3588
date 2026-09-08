@@ -40,7 +40,7 @@ int robot_ivc_subscribe(struct robot_ivc *ivc)
 }
 
 int robot_ivc_try_receive(struct robot_ivc *ivc, void *payload, size_t capacity,
-			  size_t *length)
+				  size_t *length)
 {
 	int status;
 
@@ -58,6 +58,15 @@ int robot_ivc_try_receive(struct robot_ivc *ivc, void *payload, size_t capacity,
 		return -EAGAIN;
 	}
 	return status;
+}
+
+int robot_ivc_send(struct robot_ivc *ivc, const void *payload, size_t length,
+		   int timeout_ms)
+{
+	if (ivc == NULL || ivc->channel == NULL || payload == NULL) {
+		return -EINVAL;
+	}
+	return axivc_send(ivc->channel, payload, length, timeout_ms);
 }
 
 int robot_ivc_close(struct robot_ivc *ivc)

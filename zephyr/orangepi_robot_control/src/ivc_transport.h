@@ -16,7 +16,10 @@ int robot_ivc_subscribe(struct robot_ivc *ivc);
 
 /* Return 0 for one message, -EAGAIN when the ring is currently empty. */
 int robot_ivc_try_receive(struct robot_ivc *ivc, void *payload, size_t capacity,
-			  size_t *length);
+				  size_t *length);
+
+int robot_ivc_send(struct robot_ivc *ivc, const void *payload, size_t length,
+		   int timeout_ms);
 
 int robot_ivc_close(struct robot_ivc *ivc);
 

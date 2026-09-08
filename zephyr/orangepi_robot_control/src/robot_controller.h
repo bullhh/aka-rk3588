@@ -5,6 +5,7 @@
 
 #include "feetech_bus.h"
 #include "perception_result_v2.h"
+#include "robot_runtime_config_v1.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -44,6 +45,7 @@ struct arm_motion {
 
 struct robot_controller {
 	struct feetech_bus *bus;
+	struct robot_runtime_config_v1 config;
 	struct perception_result_v2 latest;
 	struct arm_motion motion;
 	enum robot_state state;
@@ -60,7 +62,8 @@ struct robot_controller {
 };
 
 int robot_controller_init(struct robot_controller *controller,
-			  struct feetech_bus *bus);
+				  struct feetech_bus *bus,
+				  const struct robot_runtime_config_v1 *config);
 void robot_controller_process_perception(
 	struct robot_controller *controller,
 	const struct perception_result_v2 *result, int64_t received_ms);
@@ -69,5 +72,9 @@ void robot_controller_arm_tick(struct robot_controller *controller,
 bool robot_controller_input_timeout(struct robot_controller *controller,
 				    int64_t now_ms);
 const char *robot_controller_state_name(const struct robot_controller *controller);
+bool robot_controller_prepare_config_update(struct robot_controller *controller);
+int robot_controller_apply_config(
+	struct robot_controller *controller,
+	const struct robot_runtime_config_v1 *config);
 
 #endif /* ROBOT_CONTROLLER_H_ */

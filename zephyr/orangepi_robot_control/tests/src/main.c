@@ -3,6 +3,7 @@
 #include "feetech_bus.h"
 #include "perception_result_v2.h"
 #include "resettable_watchdog.h"
+#include "robot_config_receiver.h"
 #include "robot_controller.h"
 
 #include <zephyr/kernel.h>
@@ -17,6 +18,43 @@ static int arm_commands;
 static int16_t last_left;
 static int16_t last_right;
 static uint16_t last_arm_pose[FEETECH_ARM_COUNT];
+
+static struct robot_runtime_config_v1 test_runtime_config(void)
+{
+	struct robot_runtime_config_v1 config = {
+		.magic = ROBOT_RUNTIME_CONFIG_MAGIC,
+		.version = ROBOT_RUNTIME_CONFIG_VERSION,
+		.size = sizeof(config),
+		.ball_center_tolerance = 30U,
+		.ball_target_size = 155U,
+		.ball_size_tolerance = 5U,
+		.ball_stable_frames = 2U,
+		.bucket_center_tolerance = 20U,
+		.bucket_target_size = 380U,
+		.bucket_size_tolerance = 15U,
+		.bucket_stable_frames = 3U,
+		.ball_search_speed = 35U,
+		.ball_far_speed = 65U,
+		.ball_near_speed = 20U,
+		.ball_reverse_speed = 25U,
+		.ball_turn_speed = 15U,
+		.bucket_search_speed = 18U,
+		.bucket_far_speed = 70U,
+		.bucket_near_speed = 25U,
+		.bucket_reverse_speed = 25U,
+		.bucket_turn_speed = 18U,
+		.motion_speed_level = 4U,
+		.gripper_range_min = 1257U,
+		.gripper_range_max = 2731U,
+		.gripper_hold_percent = 25U,
+	};
+	for (size_t pose = 0; pose < ROBOT_POSE_COUNT; ++pose) {
+		for (size_t joint = 0; joint < ROBOT_JOINT_COUNT; ++joint) {
+			config.poses[pose][joint] = joint == 5U ? 1404U : 2048U;
+		}
+	}
+	return config;
+}
 
 int feetech_send_diff_drive(struct feetech_bus *bus, int16_t left,
 			    int16_t right, const char *label)
@@ -85,6 +123,7 @@ ZTEST(robot_control, test_perception_drives_chassis_without_arm_tick)
 		.state = ROBOT_STATE_SEARCH_BALL,
 		.last_ball_side = 1,
 	};
+	controller.config = test_runtime_config();
 	struct perception_result_v2 result = visible_ball(100U, 50U);
 
 	reset_fakes();
@@ -112,6 +151,7 @@ ZTEST(robot_control, test_arm_tick_only_advances_interpolation)
 			.active = true,
 		},
 	};
+	controller.config = test_runtime_config();
 	struct perception_result_v2 result = visible_ball(100U, 50U);
 
 	reset_fakes();
@@ -137,6 +177,7 @@ ZTEST(robot_control, test_input_timeout_stops_once_and_new_input_recovers)
 		.state = ROBOT_STATE_SEARCH_BALL,
 		.last_ball_side = 1,
 	};
+	controller.config = test_runtime_config();
 	struct perception_result_v2 result = visible_ball(320U, 50U);
 
 	reset_fakes();
@@ -159,6 +200,30 @@ ZTEST(robot_control, test_input_timeout_stops_once_and_new_input_recovers)
 	zassert_equal(wheel_commands, 3);
 	zassert_equal(last_left, 65);
 	zassert_equal(last_right, 65);
+}
+
+ZTEST(robot_control, test_config_update_accepts_idle_bucket_search)
+{
+	struct robot_controller controller = {
+		.bus = &fake_bus,
+		.state = ROBOT_STATE_SEARCH_BUCKET,
+		.stable_frames = 3U,
+		.have_input = true,
+	};
+	controller.config = test_runtime_config();
+
+	reset_fakes();
+	controller.motion.active = true;
+	zassert_false(robot_controller_prepare_config_update(&controller));
+	zassert_equal(wheel_commands, 0);
+
+	controller.motion.active = false;
+	zassert_true(robot_controller_prepare_config_update(&controller));
+	zassert_equal(wheel_commands, 1);
+	zassert_equal(last_left, 0);
+	zassert_equal(last_right, 0);
+	zassert_equal(controller.stable_frames, 0U);
+	zassert_false(controller.have_input);
 }
 
 static K_SEM_DEFINE(watchdog_fired, 0, 1);
@@ -193,6 +258,77 @@ ZTEST(robot_control, test_watchdog_is_resettable_and_one_shot)
 	k_msleep(80);
 	zassert_equal(watchdog_fires, 1, "watchdog was periodic, not one-shot");
 	resettable_watchdog_stop(&watchdog);
+}
+
+ZTEST(robot_control, test_config_receiver_acknowledges_every_chunk_and_applies)
+{
+	struct robot_runtime_config_v1 config = test_runtime_config();
+	struct robot_runtime_config_v1 output = {0};
+	struct robot_config_receiver receiver;
+	struct robot_config_message_v1 message = {
+		.magic = ROBOT_CONFIG_MESSAGE_MAGIC,
+		.version = ROBOT_CONFIG_MESSAGE_VERSION,
+		.type = ROBOT_CONFIG_BEGIN,
+		.session_id = 7U,
+		.chunk_count = (sizeof(config) + ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE - 1U) /
+			       ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE,
+		.config_size = sizeof(config),
+		.config_crc32 = robot_config_crc32(&config, sizeof(config)),
+	};
+	struct robot_config_message_v1 response;
+	bool applied = false;
+
+	robot_config_receiver_init(&receiver);
+	robot_config_receiver_handle(&receiver, &message, &response, &output,
+				     &applied);
+	zassert_equal(response.type, ROBOT_CONFIG_ACK);
+	zassert_equal(response.chunk_count, 0U);
+	zassert_false(applied);
+
+	const uint8_t *bytes = (const uint8_t *)&config;
+	for (uint16_t chunk = 0; chunk < message.chunk_count; ++chunk) {
+		message.type = ROBOT_CONFIG_CHUNK;
+		message.chunk_index = chunk;
+		const size_t offset = (size_t)chunk * ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE;
+		message.payload_size = MIN(sizeof(config) - offset,
+					   ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE);
+		memcpy(message.payload, bytes + offset, message.payload_size);
+		robot_config_receiver_handle(&receiver, &message, &response, &output,
+					     &applied);
+		zassert_equal(response.type, ROBOT_CONFIG_ACK);
+		zassert_equal(response.chunk_count, chunk + 1U);
+		zassert_false(applied);
+	}
+
+	message.type = ROBOT_CONFIG_COMMIT;
+	message.chunk_index = message.chunk_count;
+	message.payload_size = 0U;
+	robot_config_receiver_handle(&receiver, &message, &response, &output,
+				     &applied);
+	zassert_equal(response.type, ROBOT_CONFIG_APPLIED);
+	zassert_true(applied);
+	zassert_mem_equal(&output, &config, sizeof(config));
+	zassert_true(receiver.receiving);
+	zassert_equal(receiver.applied_session_id, 0U);
+
+	/* Simulate controller rejection: the same COMMIT must remain retryable. */
+	applied = false;
+	robot_config_receiver_handle(&receiver, &message, &response, &output,
+				     &applied);
+	zassert_equal(response.type, ROBOT_CONFIG_APPLIED);
+	zassert_true(applied);
+	zassert_true(receiver.receiving);
+
+	robot_config_receiver_mark_applied(&receiver);
+	zassert_false(receiver.receiving);
+	zassert_equal(receiver.applied_session_id, message.session_id);
+	zassert_equal(receiver.applied_crc32, message.config_crc32);
+
+	applied = false;
+	robot_config_receiver_handle(&receiver, &message, &response, &output,
+				     &applied);
+	zassert_equal(response.type, ROBOT_CONFIG_APPLIED);
+	zassert_false(applied);
 }
 
 ZTEST_SUITE(robot_control, NULL, NULL, NULL, NULL, NULL);

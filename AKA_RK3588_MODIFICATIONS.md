@@ -433,7 +433,7 @@ device list
 已有 build 目录时：
 
 ```bash
-cd /path/axvisor_two/aka-rk3588
+# 在 aka-rk3588 仓库根目录执行
 cmake --build build --target tennis-perception -j"$(nproc)"
 ```
 
@@ -463,7 +463,7 @@ ldd <tennis-perception>
 推荐两个仓库同级放置，然后执行：
 
 ```bash
-cd /path/axvisor_two/aka-rk3588
+# 在 aka-rk3588 仓库根目录执行
 ./scripts/build_zephyr_control.sh
 ```
 
@@ -478,7 +478,7 @@ TGOSImages 查找顺序：
 
 ```bash
 ./scripts/build_zephyr_control.sh \
-  --tgosimages-dir /path/to/tgosimages
+  --tgosimages-dir <tgosimages-checkout>
 ```
 
 已有 TGOSImages 工作树不会被 pull、checkout、reset 或 clean。
@@ -486,7 +486,7 @@ TGOSImages 查找顺序：
 ### 6.3 从 TGOSImages 反向构建
 
 ```bash
-cd /path/axvisor_two/tgosimages
+# 在 tgosimages 仓库根目录执行
 ./scripts/apps/aka-rk3588-zephyr.sh
 ```
 
@@ -494,7 +494,7 @@ cd /path/axvisor_two/tgosimages
 
 ```bash
 ./scripts/apps/aka-rk3588-zephyr.sh \
-  --aka-dir /path/to/aka-rk3588
+  --aka-dir <aka-rk3588-checkout>
 ```
 
 两个入口最终构建的都是 AKA 中的同一目录：
@@ -568,15 +568,23 @@ TGOSKits 打包文件和板端加载文件的 SHA-256。
 
 ### 7.2 Starry 根文件系统内容
 
-至少需要：
+`./build_rk3588.sh` 会在 `build/dual-runtime/` 生成可部署目录。客户机根文件系统中安装
+后的运行包至少包含：
 
 ```text
-/home/orangepi/robot/aka-rk3588-dual/
-├── build-ivc-native-linux/tennis-perception
+aka-rk3588/
+├── bin/tennis-perception
+├── lib/librknnrt.so
 ├── models/tennis.rknn
+├── config/lekiwi_calibration.json
+├── config/lekiwi_pick_config.txt
 ├── run_dual_pick.sh
-└── run_dual_pick_ci_once.sh
+├── run_dual_pick_ci_once.sh
+└── SHA256SUMS
 ```
+
+`SHA256SUMS` 只覆盖不可变的二进制、运行库、模型和启动脚本。`config/` 需要按机器人
+保留独立标定，修改后不会导致运行包完整性校验失败。
 
 还需要兼容的 UVC、TurboJPEG、RKNN runtime 和 `/dev/axivc`。
 
@@ -595,14 +603,14 @@ Zephyr 不需要访问这些文件；它是无盘、静态链接客户机。
 Starry 生产命令：
 
 ```bash
-cd /home/orangepi/robot/aka-rk3588-dual
+# 在已安装的双客户机运行包根目录执行
 ./run_dual_pick.sh
 ```
 
 默认等价于：
 
 ```bash
-RKNN_CORE_MASK=0 ./build-ivc-native-linux/tennis-perception \
+RKNN_CORE_MASK=0 ./bin/tennis-perception \
   models/tennis.rknn 0 \
   --transport ivc \
   --report-every 1 \
@@ -615,7 +623,7 @@ RKNN_CORE_MASK=0 ./build-ivc-native-linux/tennis-perception \
 不发送 IVC、不控制机器人：
 
 ```bash
-RKNN_CORE_MASK=0 ./build-ivc-native-linux/tennis-perception \
+RKNN_CORE_MASK=0 ./bin/tennis-perception \
   models/tennis.rknn 0 \
   --transport stdout \
   --max-results 100 \

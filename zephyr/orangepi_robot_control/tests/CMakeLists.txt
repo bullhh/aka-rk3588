@@ -13,5 +13,6 @@ target_include_directories(app PRIVATE
 target_sources(app PRIVATE
   src/main.c
   ${ROBOT_APP_DIR}/src/robot_controller.c
+  ${ROBOT_APP_DIR}/src/robot_config_receiver.c
   ${ROBOT_APP_DIR}/src/resettable_watchdog.c
 )

@@ -10,38 +10,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define BALL_CENTER_TOLERANCE 30U
-#define BALL_TARGET_SIZE 155U
-#define BALL_SIZE_TOLERANCE 5U
-#define BALL_STABLE_FRAMES 2U
-#define BUCKET_CENTER_TOLERANCE 20U
-#define BUCKET_TARGET_SIZE 380U
-#define BUCKET_SIZE_TOLERANCE 15U
-#define BUCKET_STABLE_FRAMES 3U
 #define ENDPOINT_TOLERANCE_RAW 220U
 
-/* Raw goals generated from the robot's checked-in LeKiwi calibration and the
- * validated pick/place configuration.  IDs 1..6 are pan, shoulder, elbow,
- * wrist, roll and gripper respectively.
- */
-static const uint16_t pose_home[] = {2197U, 1699U, 2250U, 3042U, 2048U, 2289U};
-static const uint16_t pose_home_closed[] = {
-	2197U, 1699U, 2250U, 3042U, 2048U, 1404U,
-};
-static const uint16_t pose_pre[] = {1937U, 2112U, 1891U, 3042U, 2048U, 2289U};
-static const uint16_t pose_grab[] = {1937U, 2628U, 2183U, 2537U, 2048U, 2289U};
-static const uint16_t pose_closed[] = {1937U, 2628U, 2183U, 2537U, 2048U, 1404U};
-static const uint16_t pose_clear[] = {1937U, 2112U, 1891U, 3042U, 2048U, 1404U};
-static const uint16_t pose_carry[] = {2048U, 1871U, 1489U, 2686U, 2052U, 1404U};
-static const uint16_t pose_place_approach[] = {
-	2009U, 2054U, 1408U, 3042U, 2048U, 1404U,
-};
-static const uint16_t pose_place_release[] = {
-	2009U, 2369U, 1691U, 2916U, 2048U, 1404U,
-};
-static const uint16_t pose_place_open[] = {
-	2009U, 2369U, 1691U, 2916U, 2048U, 2289U,
-};
+static const uint16_t *pose(const struct robot_controller *controller,
+			    enum robot_pose_index index)
+{
+	return controller->config.poses[index];
+}
 
 static const char *state_name(enum robot_state state)
 {
@@ -193,39 +168,48 @@ static void control_ball(struct robot_controller *controller)
 {
 	const struct perception_result_v2 *result = &controller->latest;
 	if ((result->flags & PERCEPTION_TARGET_VISIBLE) == 0U) {
-		const int16_t turn = controller->last_ball_side < 0 ? -18 : 18;
+		const int16_t speed = (int16_t)controller->config.ball_search_speed;
+		const int16_t turn = controller->last_ball_side < 0 ? -speed : speed;
 		controller->stable_frames = 0U;
 		command_wheels(controller, -turn, turn, "SEARCH_BALL");
 		return;
 	}
 	const int32_t center_error = (int32_t)result->center_x - result->frame_width / 2;
-	if (center_error < -(int32_t)BALL_CENTER_TOLERANCE) {
+	if (center_error < -(int32_t)controller->config.ball_center_tolerance) {
 		controller->last_ball_side = -1;
 		controller->stable_frames = 0U;
-		command_wheels(controller, -15, 15, "BALL_LEFT");
+		const int16_t speed = (int16_t)controller->config.ball_turn_speed;
+		command_wheels(controller, -speed, speed, "BALL_LEFT");
 		return;
 	}
-	if (center_error > (int32_t)BALL_CENTER_TOLERANCE) {
+	if (center_error > (int32_t)controller->config.ball_center_tolerance) {
 		controller->last_ball_side = 1;
 		controller->stable_frames = 0U;
-		command_wheels(controller, 15, -15, "BALL_RIGHT");
+		const int16_t speed = (int16_t)controller->config.ball_turn_speed;
+		command_wheels(controller, speed, -speed, "BALL_RIGHT");
 		return;
 	}
 	const uint32_t size = MAX(result->box_width, result->box_height);
-	if (size + BALL_SIZE_TOLERANCE < BALL_TARGET_SIZE) {
+	if (size + controller->config.ball_size_tolerance <
+	    controller->config.ball_target_size) {
 		controller->stable_frames = 0U;
-		const int16_t speed = size + 30U < BALL_TARGET_SIZE ? 65 : 20;
+		const int16_t speed = size + 30U < controller->config.ball_target_size ?
+			(int16_t)controller->config.ball_far_speed :
+			(int16_t)controller->config.ball_near_speed;
 		command_wheels(controller, speed, speed, "BALL_FORWARD");
 		return;
 	}
-	if (size > BALL_TARGET_SIZE + BALL_SIZE_TOLERANCE) {
+	if (size > controller->config.ball_target_size +
+	    controller->config.ball_size_tolerance) {
 		controller->stable_frames = 0U;
-		command_wheels(controller, -25, -25, "BALL_REVERSE");
+		const int16_t speed = (int16_t)controller->config.ball_reverse_speed;
+		command_wheels(controller, -speed, -speed, "BALL_REVERSE");
 		return;
 	}
 	command_wheels(controller, 0, 0, "BALL_ALIGNED");
-	if (++controller->stable_frames >= BALL_STABLE_FRAMES) {
-		(void)begin_motion(controller, ROBOT_STATE_PICK_HOME, pose_home, 3000U);
+	if (++controller->stable_frames >= controller->config.ball_stable_frames) {
+		(void)begin_motion(controller, ROBOT_STATE_PICK_HOME,
+				   pose(controller, ROBOT_POSE_HOME), 3000U);
 	}
 }
 
@@ -234,38 +218,46 @@ static void control_bucket(struct robot_controller *controller)
 	const struct perception_result_v2 *result = &controller->latest;
 	if ((result->flags & PERCEPTION_BUCKET_VISIBLE) == 0U) {
 		controller->stable_frames = 0U;
-		command_wheels(controller, -18, 18, "SEARCH_BUCKET");
+		const int16_t speed = (int16_t)controller->config.bucket_search_speed;
+		command_wheels(controller, -speed, speed, "SEARCH_BUCKET");
 		return;
 	}
 	const int32_t center_error = (int32_t)result->bucket_center_x -
 				     result->frame_width / 2;
-	if (center_error < -(int32_t)BUCKET_CENTER_TOLERANCE) {
+	if (center_error < -(int32_t)controller->config.bucket_center_tolerance) {
 		controller->stable_frames = 0U;
-		command_wheels(controller, -18, 18, "BUCKET_LEFT");
+		const int16_t speed = (int16_t)controller->config.bucket_turn_speed;
+		command_wheels(controller, -speed, speed, "BUCKET_LEFT");
 		return;
 	}
-	if (center_error > (int32_t)BUCKET_CENTER_TOLERANCE) {
+	if (center_error > (int32_t)controller->config.bucket_center_tolerance) {
 		controller->stable_frames = 0U;
-		command_wheels(controller, 18, -18, "BUCKET_RIGHT");
+		const int16_t speed = (int16_t)controller->config.bucket_turn_speed;
+		command_wheels(controller, speed, -speed, "BUCKET_RIGHT");
 		return;
 	}
 	const uint32_t size = integer_sqrt((uint32_t)result->bucket_box_width *
 					   result->bucket_box_height);
-	if (size + BUCKET_SIZE_TOLERANCE < BUCKET_TARGET_SIZE) {
+	if (size + controller->config.bucket_size_tolerance <
+	    controller->config.bucket_target_size) {
 		controller->stable_frames = 0U;
-		const int16_t speed = size + 60U < BUCKET_TARGET_SIZE ? 70 : 25;
+		const int16_t speed = size + 60U < controller->config.bucket_target_size ?
+			(int16_t)controller->config.bucket_far_speed :
+			(int16_t)controller->config.bucket_near_speed;
 		command_wheels(controller, speed, speed, "BUCKET_FORWARD");
 		return;
 	}
-	if (size > BUCKET_TARGET_SIZE + BUCKET_SIZE_TOLERANCE) {
+	if (size > controller->config.bucket_target_size +
+	    controller->config.bucket_size_tolerance) {
 		controller->stable_frames = 0U;
-		command_wheels(controller, -25, -25, "BUCKET_REVERSE");
+		const int16_t speed = (int16_t)controller->config.bucket_reverse_speed;
+		command_wheels(controller, -speed, -speed, "BUCKET_REVERSE");
 		return;
 	}
 	command_wheels(controller, 0, 0, "BUCKET_ALIGNED");
-	if (++controller->stable_frames >= BUCKET_STABLE_FRAMES) {
+	if (++controller->stable_frames >= controller->config.bucket_stable_frames) {
 		(void)begin_motion(controller, ROBOT_STATE_PLACE_APPROACH,
-				   pose_place_approach, 2500U);
+				   pose(controller, ROBOT_POSE_PLACE_APPROACH), 2500U);
 	}
 }
 
@@ -316,39 +308,46 @@ static void advance_motion(struct robot_controller *controller)
 		set_state(controller, ROBOT_STATE_SEARCH_BALL);
 		break;
 	case ROBOT_STATE_PICK_HOME:
-		(void)begin_motion(controller, ROBOT_STATE_PICK_PRE, pose_pre, 2500U);
+		(void)begin_motion(controller, ROBOT_STATE_PICK_PRE,
+				   pose(controller, ROBOT_POSE_PRE), 2500U);
 		break;
 	case ROBOT_STATE_PICK_PRE:
-		(void)begin_motion(controller, ROBOT_STATE_PICK_GRAB, pose_grab, 1800U);
+		(void)begin_motion(controller, ROBOT_STATE_PICK_GRAB,
+				   pose(controller, ROBOT_POSE_GRAB), 1800U);
 		break;
 	case ROBOT_STATE_PICK_GRAB:
-		(void)begin_motion(controller, ROBOT_STATE_PICK_CLOSE, pose_closed, 1200U);
+		(void)begin_motion(controller, ROBOT_STATE_PICK_CLOSE,
+				   pose(controller, ROBOT_POSE_CLOSED), 1200U);
 		break;
 	case ROBOT_STATE_PICK_CLOSE:
 		set_state(controller, ROBOT_STATE_PICK_VERIFY);
 		break;
 	case ROBOT_STATE_PICK_CLEAR:
-		(void)begin_motion(controller, ROBOT_STATE_PICK_CARRY, pose_carry, 2500U);
+		(void)begin_motion(controller, ROBOT_STATE_PICK_CARRY,
+				   pose(controller, ROBOT_POSE_CARRY), 2500U);
 		break;
 	case ROBOT_STATE_PICK_CARRY:
 		set_state(controller, ROBOT_STATE_SEARCH_BUCKET);
 		break;
 	case ROBOT_STATE_PLACE_APPROACH:
 		(void)begin_motion(controller, ROBOT_STATE_PLACE_RELEASE,
-				   pose_place_release, 2200U);
+				   pose(controller, ROBOT_POSE_PLACE_RELEASE), 2200U);
 		break;
 	case ROBOT_STATE_PLACE_RELEASE:
-		(void)begin_motion(controller, ROBOT_STATE_PLACE_OPEN, pose_place_open, 1200U);
+		(void)begin_motion(controller, ROBOT_STATE_PLACE_OPEN,
+				   pose(controller, ROBOT_POSE_PLACE_OPEN), 1200U);
 		break;
 	case ROBOT_STATE_PLACE_OPEN:
 		(void)begin_motion(controller, ROBOT_STATE_PLACE_RETRACT,
-				   pose_place_approach, 1800U);
+				   pose(controller, ROBOT_POSE_PLACE_APPROACH), 1800U);
 		break;
 	case ROBOT_STATE_PLACE_RETRACT:
-		(void)begin_motion(controller, ROBOT_STATE_PLACE_CARRY, pose_carry, 2500U);
+		(void)begin_motion(controller, ROBOT_STATE_PLACE_CARRY,
+				   pose(controller, ROBOT_POSE_CARRY), 2500U);
 		break;
 	case ROBOT_STATE_PLACE_CARRY:
-		(void)begin_motion(controller, ROBOT_STATE_PLACE_CLOSE, pose_home_closed, 2500U);
+		(void)begin_motion(controller, ROBOT_STATE_PLACE_CLOSE,
+				   pose(controller, ROBOT_POSE_HOME_CLOSED), 2500U);
 		break;
 	case ROBOT_STATE_PLACE_CLOSE:
 		++controller->completed_cycles;
@@ -365,7 +364,8 @@ static void advance_motion(struct robot_controller *controller)
 		}
 		break;
 	case ROBOT_STATE_RECOVER_OPEN:
-		(void)begin_motion(controller, ROBOT_STATE_RECOVER_HOME, pose_home, 3000U);
+		(void)begin_motion(controller, ROBOT_STATE_RECOVER_HOME,
+				   pose(controller, ROBOT_POSE_HOME), 3000U);
 		break;
 	case ROBOT_STATE_RECOVER_HOME:
 		set_state(controller, ROBOT_STATE_SEARCH_BALL);
@@ -386,9 +386,13 @@ static void verify_pick(struct robot_controller *controller)
 		fault(controller, "pick-feedback", result);
 		return;
 	}
-	const int32_t logical_percent = CLAMP(((int32_t)positions[5] - 1257) * 100 /
-					      (2731 - 1257), 0, 100);
-	const bool measured_holding = logical_percent > 25 ||
+	const int32_t gripper_span = MAX((int32_t)controller->config.gripper_range_max -
+					 (int32_t)controller->config.gripper_range_min, 1);
+	const int32_t logical_percent = CLAMP(
+		((int32_t)positions[5] - (int32_t)controller->config.gripper_range_min) *
+		100 / gripper_span, 0, 100);
+	const bool measured_holding =
+		logical_percent > controller->config.gripper_hold_percent ||
 				      (gripper_status & 0x20U) != 0U;
 	const bool holding = measured_holding || controller->robot_ci_mode;
 	printk("ZEPHYR_PICK_VERIFY holding=%u measured_holding=%u simulated=%u "
@@ -396,21 +400,55 @@ static void verify_pick(struct robot_controller *controller)
 	       measured_holding, controller->robot_ci_mode && !measured_holding,
 	       positions[5], logical_percent, gripper_status);
 	if (holding) {
-		(void)begin_motion(controller, ROBOT_STATE_PICK_CLEAR, pose_clear, 1800U);
+		(void)begin_motion(controller, ROBOT_STATE_PICK_CLEAR,
+				   pose(controller, ROBOT_POSE_CLEAR), 1800U);
 	} else {
 		printk("ZEPHYR_PICK_RETRY reason=empty-gripper\n");
-		(void)begin_motion(controller, ROBOT_STATE_RECOVER_OPEN, pose_grab, 1200U);
+		(void)begin_motion(controller, ROBOT_STATE_RECOVER_OPEN,
+				   pose(controller, ROBOT_POSE_GRAB), 1200U);
 	}
 }
 
 int robot_controller_init(struct robot_controller *controller,
-			  struct feetech_bus *bus)
+				  struct feetech_bus *bus,
+				  const struct robot_runtime_config_v1 *config)
 {
 	memset(controller, 0, sizeof(*controller));
 	controller->bus = bus;
+	memcpy(&controller->config, config, sizeof(controller->config));
 	controller->state = ROBOT_STATE_STARTUP_HOME;
 	controller->last_ball_side = 1;
-	return begin_motion(controller, ROBOT_STATE_STARTUP_HOME, pose_home, 4000U);
+	return begin_motion(controller, ROBOT_STATE_STARTUP_HOME,
+			    pose(controller, ROBOT_POSE_HOME), 4000U);
+}
+
+bool robot_controller_prepare_config_update(struct robot_controller *controller)
+{
+	if (controller->motion.active ||
+	    (controller->state != ROBOT_STATE_SEARCH_BALL &&
+	     controller->state != ROBOT_STATE_SEARCH_BUCKET &&
+	     controller->state != ROBOT_STATE_TEST_COMPLETE)) {
+		return false;
+	}
+	command_wheels(controller, 0, 0, "CONFIG_UPDATE_STOP");
+	controller->stable_frames = 0U;
+	controller->have_input = false;
+	return true;
+}
+
+int robot_controller_apply_config(
+	struct robot_controller *controller,
+	const struct robot_runtime_config_v1 *config)
+{
+	if (!robot_controller_prepare_config_update(controller)) {
+		return -EBUSY;
+	}
+	memcpy(&controller->config, config, sizeof(controller->config));
+	controller->robot_ci_mode = false;
+	controller->wheel_command_valid = false;
+	controller->state = ROBOT_STATE_STARTUP_HOME;
+	return begin_motion(controller, ROBOT_STATE_STARTUP_HOME,
+			    pose(controller, ROBOT_POSE_HOME), 4000U);
 }
 
 void robot_controller_process_perception(
