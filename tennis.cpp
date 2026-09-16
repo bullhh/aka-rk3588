@@ -606,6 +606,10 @@ int main(int argc, char** argv)
         LOGE("--bucket-place-demo requires platform=lekiwi");
         return 1;
     }
+    if (robot_ci_once && fake_ball) {
+        LOGE("Robot CI requires real camera inference; LEKIWI_FAKE_BALL is incompatible");
+        return 1;
+    }
     if (robot_ci_once && !use_lekiwi) {
         LOGE("--robot-ci-once requires platform=lekiwi");
         return 1;
@@ -677,7 +681,7 @@ int main(int argc, char** argv)
             while (!startup_controller.done()) {
                 if (g_stop_requested) {
                     cleanup_and_exit();
-                    return 0;
+                    return robot_ci_once ? 1 : 0;
                 }
                 if (!startup_controller.tick() || startup_controller.failed()) {
                     LOGE("Failed to prepare CARRY for bucket/place demo: %s",
@@ -779,7 +783,7 @@ int main(int argc, char** argv)
             if (capture.getFrame(mjpeg_buf, MJPEG_BUF, 500) > 0) valid++;
             if (g_stop_requested) {
                 cleanup_and_exit();
-                return 0;
+                return robot_ci_once ? 1 : 0;
             }
         }
     } else {
@@ -925,7 +929,7 @@ int main(int argc, char** argv)
         if (g_stop_requested) {
             perf_window.maybe_report(capture.stats(), nullptr, true);
             cleanup_and_exit();
-            return 0;
+            return robot_ci_once ? 1 : 0;
         }
 
         FramePerfGuard frame_perf(perf_window);
@@ -942,7 +946,7 @@ int main(int argc, char** argv)
         if (jpeg_len <= 0) {
             if (g_stop_requested) {
                 cleanup_and_exit();
-                return 0;
+                return robot_ci_once ? 1 : 0;
             }
             dup2(g_saved_stderr, STDERR_FILENO);
             LOGW("[Frame %d] No frame (timeout)", frame_idx);
@@ -1024,7 +1028,7 @@ int main(int argc, char** argv)
             while (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->done()) {
                 if (g_stop_requested) {
                     cleanup_and_exit();
-                    return 0;
+                    return robot_ci_once ? 1 : 0;
                 }
                 if (!lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
                     dup2(g_saved_stderr, STDERR_FILENO);
@@ -1242,7 +1246,7 @@ int main(int argc, char** argv)
             while (lekiwi_arm_ctrl && !lekiwi_arm_ctrl->done()) {
                 if (g_stop_requested) {
                     cleanup_and_exit();
-                    return 0;
+                    return robot_ci_once ? 1 : 0;
                 }
                 if (!lekiwi_arm_ctrl->tick() || lekiwi_arm_ctrl->failed()) {
                     dup2(g_saved_stderr, STDERR_FILENO);
@@ -1276,7 +1280,12 @@ int main(int argc, char** argv)
                     dup2(g_devnull, STDERR_FILENO);
                 }
                 if (robot_ci_once) {
-                    drive_ptr->standby();
+                    if (!omni_base_ptr->stop() || robot_ci_perf_results.size() != 2 ||
+                        !robot_ci_ball_drive_seen || !robot_ci_bucket_drive_seen) {
+                        printf("[ROBOT_CI] ATTEMPT_FAIL reason=incomplete_flow_or_stop_failure\n");
+                        cleanup_and_exit();
+                        return 1;
+                    }
                     dup2(g_saved_stderr, STDERR_FILENO);
                     // The put sequence finishes with CARRY followed only by a
                     // gripper-close step, so all arm joints are already in the
@@ -1503,9 +1512,16 @@ int main(int argc, char** argv)
                 fake_ball_logged = true;
             }
         } else {
-            detect_run(&rknn_ctx, rgb_buf, model_w, model_h,
+            if (robot_ci_once) dup2(g_saved_stderr, STDERR_FILENO);
+            const int detections = detect_run(&rknn_ctx, rgb_buf, model_w, model_h,
                        FRAME_WIDTH, FRAME_HEIGHT, lb_x, lb_y, lb_sc,
                        0.5f, 0.45f, dets, &ti, &tr, &to, &tp, &trel);
+            if (robot_ci_once && detections < 0) {
+                printf("[ROBOT_CI] ATTEMPT_FAIL reason=inference_failed frame=%d\n", frame_idx);
+                cleanup_and_exit();
+                return 1;
+            }
+            if (robot_ci_once) dup2(g_devnull, STDERR_FILENO);
             if (robot_ci_once && !robot_ci_perf_started &&
                 !robot_ci_perf_start_pending && robot_ci_perf_results.empty()) {
                 robot_ci_warmup_inferences++;

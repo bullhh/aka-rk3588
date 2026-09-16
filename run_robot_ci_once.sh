@@ -12,6 +12,12 @@ MIN_FPS="${1:-12.5}"
 MODEL_PATH="${MODEL_PATH:-${SCRIPT_DIR}/models/tennis.rknn}"
 FEETECH_DEV="${FEETECH_DEV:-auto}"
 UVC_INDEX="${UVC_INDEX:-0}"
+if [ "$#" -gt 1 ] || ! awk -v value="${MIN_FPS}" 'BEGIN {
+    exit !(value ~ /^[0-9]+([.][0-9][0-9]?)?$/ && value + 0 > 0 && value + 0 <= 1000)
+}'; then
+    echo "[ROBOT_CI] RESULT=FAIL reason=invalid_min_fps"
+    exit 2
+fi
 
 if [ ! -x "${SCRIPT_DIR}/build/tennis" ]; then
     echo "[ROBOT_CI] RESULT=FAIL reason=missing_binary path=${SCRIPT_DIR}/build/tennis"
@@ -74,9 +80,53 @@ run_attempt() {
     cd "${SCRIPT_DIR}" || return 1
 
     app_status=0
-    "${SCRIPT_DIR}/build/tennis" \
-        "${MODEL_PATH}" "${FEETECH_DEV}" "${UVC_INDEX}" \
-        "${FEETECH_DEV}" lekiwi --robot-ci-once || app_status=$?
+    {
+        "${SCRIPT_DIR}/build/tennis" \
+            "${MODEL_PATH}" "${FEETECH_DEV}" "${UVC_INDEX}" \
+            "${FEETECH_DEV}" lekiwi --robot-ci-once
+        printf '\nROBOT_PROCESS_EXIT status=%d\n' "$?"
+    } 2>&1 | awk -v minimum="${MIN_FPS}" '
+function field(key, i, pair) {
+    for (i = 2; i <= NF; i++) {
+        split($i, pair, "=")
+        if (pair[1] == key) return pair[2]
+    }
+    return ""
+}
+function numeric(value) { return value ~ /^[0-9]+([.][0-9][0-9]?)?$/ }
+{ sub(/\r$/, ""); print; fflush() }
+/^\[ROBOT_CI\] PERF_BEGIN / {
+    if (begun++ || field("windows") != "2" || field("min_fps") + 0 != minimum + 0) invalid = 1
+}
+/^\[ROBOT_CI\] PERF_WINDOW / {
+    elapsed = field("elapsed_s")
+    if (!begun || summary || field("index") != ((windows + 1) "/2") ||
+        !numeric(elapsed) || elapsed + 0 < 10 || !numeric(field("effective_fps"))) invalid = 1
+    windows++
+}
+/^\[ROBOT_CI\] PERF_SUMMARY / {
+    fps = field("effective_fps")
+    if (summary++ || windows != 2 || field("windows") != "2" ||
+        !numeric(fps) || fps + 0 < minimum + 0) invalid = 1
+}
+/^\[ROBOT_CI\] SAFE_POSE=PASS pose=carry source=flow$/ { safe = 1 }
+/^\[ROBOT_CI\] ATTEMPT_PASS / {
+    if (completed++ || !summary || !safe || field("flow") != "1" ||
+        field("perf_windows") != "2" || field("safe_stop") != "1" ||
+        field("ball_drive") != "1" || field("bucket_drive") != "1") invalid = 1
+}
+/^\[ROBOT_CI\] ATTEMPT_FAIL / { invalid = 1 }
+/^ROBOT_PROCESS_EXIT / {
+    if (exited++) invalid = 1
+    status = field("status")
+}
+END {
+    if (!exited || !numeric(status) || status + 0 != 0 || invalid ||
+        windows != 2 || !completed) {
+        print "[ROBOT_CI] ATTEMPT_FAIL reason=incomplete_or_failed_process"
+        exit 1
+    }
+}' || app_status=$?
 
     # A successful flow already ends in CARRY and emits SAFE_POSE=PASS before
     # returning. On an early failure, reopen the released bus and recover to
