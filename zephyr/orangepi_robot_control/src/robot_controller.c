@@ -68,6 +68,7 @@ static void command_wheels(struct robot_controller *controller, int16_t left,
 		return;
 	}
 	if (feetech_send_diff_drive(controller->bus, left, right, label) != 0) {
+		controller->fault_code = -EIO;
 		set_state(controller, ROBOT_STATE_FAULT);
 		feetech_stop_wheels(controller->bus, "BUS_ERROR_STOP");
 		return;
@@ -79,6 +80,7 @@ static void command_wheels(struct robot_controller *controller, int16_t left,
 
 static void fault(struct robot_controller *controller, const char *reason, int status)
 {
+	controller->fault_code = status != 0 ? status : -EIO;
 	command_wheels(controller, 0, 0, "FAULT_STOP");
 	set_state(controller, ROBOT_STATE_FAULT);
 	printk("ZEPHYR_ROBOT_FAULT reason=%s status=%d\n", reason, status);
@@ -350,18 +352,19 @@ static void advance_motion(struct robot_controller *controller)
 				   pose(controller, ROBOT_POSE_HOME_CLOSED), 2500U);
 		break;
 	case ROBOT_STATE_PLACE_CLOSE:
-		++controller->completed_cycles;
-		printk("ZEPHYR_PICK_CYCLE_PASS cycles=%llu\n",
-		       controller->completed_cycles);
 		if (controller->robot_ci_mode) {
+			/* Force a fresh stop write; do not reuse cached zero goals. */
+			controller->wheel_command_valid = false;
 			command_wheels(controller, 0, 0, "ROBOT_CI_COMPLETE_STOP");
+			if (controller->state == ROBOT_STATE_FAULT) {
+				return;
+			}
 			set_state(controller, ROBOT_STATE_TEST_COMPLETE);
-			printk("ZEPHYR_ROBOT_CI_PASS cycles=%llu wheels=verified "
-			       "arm=verified watchdog=verified\n",
-			       controller->completed_cycles);
 		} else {
 			set_state(controller, ROBOT_STATE_SEARCH_BALL);
 		}
+		++controller->completed_cycles;
+		printk("ZEPHYR_PICK_CYCLE_PASS cycles=%llu\n", controller->completed_cycles);
 		break;
 	case ROBOT_STATE_RECOVER_OPEN:
 		(void)begin_motion(controller, ROBOT_STATE_RECOVER_HOME,
@@ -445,6 +448,8 @@ int robot_controller_apply_config(
 	}
 	memcpy(&controller->config, config, sizeof(controller->config));
 	controller->robot_ci_mode = false;
+	controller->completed_cycles = 0;
+	controller->fault_code = 0;
 	controller->wheel_command_valid = false;
 	controller->state = ROBOT_STATE_STARTUP_HOME;
 	return begin_motion(controller, ROBOT_STATE_STARTUP_HOME,
@@ -517,4 +522,43 @@ bool robot_controller_input_timeout(struct robot_controller *controller,
 	       state_name(controller->state), now_ms - controller->last_input_ms,
 	       ROBOT_INPUT_TIMEOUT_MS);
 	return true;
+}
+
+void robot_controller_control_result(
+	const struct robot_controller *controller, uint32_t applied_session,
+	uint32_t applied_crc, const struct robot_config_message_v1 *request,
+	struct robot_config_message_v1 *response)
+{
+	memset(response, 0, sizeof(*response));
+	response->magic = ROBOT_CONFIG_MESSAGE_MAGIC;
+	response->version = ROBOT_CONFIG_MESSAGE_VERSION;
+	response->type = ROBOT_CONTROL_RESULT;
+	response->session_id = request->session_id;
+	response->config_crc32 = request->config_crc32;
+	response->chunk_index = request->chunk_index;
+	response->payload_size = sizeof(struct robot_control_result_v1);
+	struct robot_control_result_v1 result = {
+		.completed_cycles = (uint32_t)MIN(controller->completed_cycles, UINT32_MAX),
+		.controller_state = controller->state,
+		.error_code = controller->fault_code,
+	};
+	if (request->type != ROBOT_CONTROL_FINISH || request->payload_size != 0U ||
+	    request->magic != ROBOT_CONFIG_MESSAGE_MAGIC ||
+	    request->version != ROBOT_CONFIG_MESSAGE_VERSION) {
+		response->status = ROBOT_CONFIG_STATUS_INVALID_MESSAGE;
+	} else if (applied_session == 0U || request->session_id != applied_session ||
+		   request->config_crc32 != applied_crc) {
+		response->status = ROBOT_CONFIG_STATUS_WRONG_SESSION;
+	} else if (controller->state == ROBOT_STATE_FAULT || controller->fault_code != 0) {
+		response->status = ROBOT_CONTROL_STATUS_FAILED;
+	} else if (controller->robot_ci_mode && controller->state == ROBOT_STATE_TEST_COMPLETE &&
+		   controller->completed_cycles > 0 && !controller->motion.active &&
+		   controller->wheel_command_valid && controller->last_left == 0 &&
+		   controller->last_right == 0) {
+		response->status = ROBOT_CONFIG_STATUS_OK;
+		result.checks = ROBOT_CONTROL_CHECKS_REQUIRED;
+	} else {
+		response->status = ROBOT_CONTROL_STATUS_PENDING;
+	}
+	memcpy(response->payload, &result, sizeof(result));
 }

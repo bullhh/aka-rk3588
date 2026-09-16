@@ -84,7 +84,10 @@ if [ ! -f "${CALIBRATION_PATH}" ] || [ ! -f "${PICK_CONFIG_PATH}" ]; then
 fi
 
 if [ "${_AKA_DUAL_PICK_CI_ONCE:-0}" = "1" ]; then
-    set -- --robot-ci-once --min-fps 15
+    # The CI configuration owns the threshold; the CI entry point validates it.
+    : "${_AKA_DUAL_PICK_CI_MIN_FPS:?CI requires an explicit --min-fps}"
+    echo "DUAL_PICK_CI_GATE min_fps=${_AKA_DUAL_PICK_CI_MIN_FPS}"
+    set -- --robot-ci-once --min-fps "${_AKA_DUAL_PICK_CI_MIN_FPS}"
 else
     set --
 fi

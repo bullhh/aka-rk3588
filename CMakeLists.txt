@@ -8,6 +8,12 @@ option(BUILD_TESTING "Build aka-rk3588 unit tests" OFF)
 include(CTest)
 
 if(BUILD_TESTING)
+  find_program(PYTHON3_EXECUTABLE python3)
+  if(NOT PYTHON3_EXECUTABLE)
+    message(FATAL_ERROR "python3 is required for launcher tests")
+  endif()
+  add_test(NAME dual_pick_launcher
+      COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/dual_pick_launcher_test.py)
   add_executable(feetech_motion_policy_test
       tests/feetech_motion_policy_test.cpp
       robot/feetech_motion_policy.cpp

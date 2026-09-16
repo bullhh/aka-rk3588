@@ -130,6 +130,13 @@ strings IMAGES/orangepi/zephyr/orangepi-robot-control-sdk.elf \
 
 ## 运行
 
+CI 模式由 Linux/Starry 运行 `./run_dual_pick_ci_once.sh --min-fps <门槛>`。
+场景发送结束后，感知端用同一 IVC 查询 `ROBOT_CONTROL_FINISH`，Zephyr 主循环从
+控制器获取结果并在锁外回传 `ROBOT_CONTROL_RESULT`。只有当前会话完成动作周期、
+机械臂终点反馈通过、停车命令成功且无故障才返回成功；未完成返回 pending，故障返回 failed。
+感知端打印 `ROBOT_CONTROL_DONE` 后才能通过 CI，不再依赖 Zephyr 串口成功文本。
+这些检查不代表真实抓握、轮速测量或看门狗实验已验证。
+
 构建完成不等于已经部署。还需要由 TGOSKits/AxVisor 的 Orange Pi 双客户机配置把 BIN、
 DTB、内存、vCPU、IVC 和 UART6 资源组装进板端启动镜像。
 

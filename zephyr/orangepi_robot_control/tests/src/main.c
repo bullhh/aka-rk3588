@@ -18,6 +18,7 @@ static int arm_commands;
 static int16_t last_left;
 static int16_t last_right;
 static uint16_t last_arm_pose[FEETECH_ARM_COUNT];
+static bool fail_final_stop;
 
 static struct robot_runtime_config_v1 test_runtime_config(void)
 {
@@ -64,6 +65,9 @@ int feetech_send_diff_drive(struct feetech_bus *bus, int16_t left,
 	++wheel_commands;
 	last_left = left;
 	last_right = right;
+	if (fail_final_stop && strcmp(label, "ROBOT_CI_COMPLETE_STOP") == 0) {
+		return -EIO;
+	}
 	return 0;
 }
 
@@ -95,6 +99,7 @@ static void reset_fakes(void)
 {
 	wheel_commands = 0;
 	arm_commands = 0;
+	fail_final_stop = false;
 	last_left = 0;
 	last_right = 0;
 	memset(last_arm_pose, 0, sizeof(last_arm_pose));
@@ -114,6 +119,58 @@ static struct perception_result_v2 visible_ball(uint16_t center_x,
 		.box_width = box_size,
 		.box_height = box_size,
 	};
+}
+
+ZTEST(robot_control, test_failed_final_stop_cannot_publish_test_complete)
+{
+	struct robot_controller controller = {
+		.bus = &fake_bus,
+		.state = ROBOT_STATE_PLACE_CLOSE,
+		.robot_ci_mode = true,
+		.motion = {.active = true, .duration_ms = 100U},
+	};
+	reset_fakes();
+	controller.config = test_runtime_config();
+	fail_final_stop = true;
+	robot_controller_arm_tick(&controller, 100);
+	zassert_equal(controller.state, ROBOT_STATE_FAULT);
+	zassert_equal(controller.completed_cycles, 0);
+}
+
+ZTEST(robot_control, test_control_result_is_session_bound_idempotent_and_resettable)
+{
+	struct robot_controller controller = {
+		.bus = &fake_bus, .state = ROBOT_STATE_PLACE_CLOSE,
+		.robot_ci_mode = true,
+		.motion = {.active = true, .duration_ms = 100U},
+	};
+	struct robot_config_message_v1 request = {
+		.magic = ROBOT_CONFIG_MESSAGE_MAGIC, .version = ROBOT_CONFIG_MESSAGE_VERSION,
+		.type = ROBOT_CONTROL_FINISH, .session_id = 17, .config_crc32 = 123,
+	};
+	struct robot_config_message_v1 first, second;
+	reset_fakes();
+	controller.config = test_runtime_config();
+	robot_controller_control_result(&controller, 17, 123, &request, &first);
+	zassert_equal(first.status, ROBOT_CONTROL_STATUS_PENDING);
+	robot_controller_arm_tick(&controller, 100);
+	robot_controller_control_result(&controller, 17, 123, &request, &first);
+	zassert_equal(first.status, ROBOT_CONFIG_STATUS_OK);
+	int commands_before = wheel_commands + arm_commands;
+	robot_controller_control_result(&controller, 17, 123, &request, &second);
+	zassert_mem_equal(&first, &second, sizeof(first));
+	zassert_equal(wheel_commands + arm_commands, commands_before);
+	request.session_id = 16;
+	robot_controller_control_result(&controller, 17, 123, &request, &first);
+	zassert_equal(first.status, ROBOT_CONFIG_STATUS_WRONG_SESSION);
+	request.session_id = 17;
+	zassert_ok(robot_controller_apply_config(&controller, &controller.config));
+	zassert_equal(controller.completed_cycles, 0);
+	robot_controller_control_result(&controller, 17, 123, &request, &first);
+	zassert_equal(first.status, ROBOT_CONTROL_STATUS_PENDING);
+	controller.state = ROBOT_STATE_FAULT;
+	robot_controller_control_result(&controller, 17, 123, &request, &first);
+	zassert_equal(first.status, ROBOT_CONTROL_STATUS_FAILED);
 }
 
 ZTEST(robot_control, test_perception_drives_chassis_without_arm_tick)

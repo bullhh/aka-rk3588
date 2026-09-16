@@ -35,6 +35,8 @@ enum robot_config_message_type {
 	ROBOT_CONFIG_ACK = 4,
 	ROBOT_CONFIG_APPLIED = 5,
 	ROBOT_CONFIG_REJECTED = 6,
+	ROBOT_CONTROL_FINISH = 7,
+	ROBOT_CONTROL_RESULT = 8,
 };
 
 enum robot_config_status {
@@ -46,6 +48,23 @@ enum robot_config_status {
 	ROBOT_CONFIG_STATUS_INVALID_CONFIG = 5,
 	ROBOT_CONFIG_STATUS_WRONG_SESSION = 6,
 	ROBOT_CONFIG_STATUS_BUSY = 7,
+	ROBOT_CONTROL_STATUS_PENDING = 8,
+	ROBOT_CONTROL_STATUS_FAILED = 9,
+};
+
+#define ROBOT_CONTROL_CHECK_CYCLE 1U
+#define ROBOT_CONTROL_CHECK_ARM_ENDPOINT 2U
+#define ROBOT_CONTROL_CHECK_STOP_COMMAND 4U
+#define ROBOT_CONTROL_CHECKS_REQUIRED 7U
+
+/* CONTROL_RESULT payload; all fields are little-endian on supported peers.
+ * A stop-command success is not a measured wheel velocity or grasp verdict.
+ */
+struct robot_control_result_v1 {
+	uint32_t completed_cycles;
+	uint32_t checks;
+	uint32_t controller_state;
+	int32_t error_code;
 };
 
 /* Resolved, hardware-ready values derived from the persistent calibration and

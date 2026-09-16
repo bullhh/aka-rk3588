@@ -53,6 +53,7 @@ struct robot_controller {
 	int64_t state_started_ms;
 	uint64_t completed_cycles;
 	uint32_t stable_frames;
+	int32_t fault_code;
 	int16_t last_left;
 	int16_t last_right;
 	int8_t last_ball_side;
@@ -76,5 +77,11 @@ bool robot_controller_prepare_config_update(struct robot_controller *controller)
 int robot_controller_apply_config(
 	struct robot_controller *controller,
 	const struct robot_runtime_config_v1 *config);
+
+/* Caller holds controller_lock; send the returned snapshot after unlocking. */
+void robot_controller_control_result(
+	const struct robot_controller *controller, uint32_t applied_session,
+	uint32_t applied_crc, const struct robot_config_message_v1 *request,
+	struct robot_config_message_v1 *response);
 
 #endif /* ROBOT_CONTROLLER_H_ */

@@ -6,6 +6,7 @@
 #include "logger.hpp"
 #include "protocol/robot_runtime_config_v1.h"
 #include "robot/ivc_publish_retry.hpp"
+#include "robot/ivc_reply_policy.hpp"
 #include "robot/lekiwi_runtime_config.hpp"
 
 #include <axivc/axivc.h>
@@ -21,6 +22,7 @@
 #include <string>
 #include <thread>
 #include <time.h>
+#include <sys/random.h>
 #include <turbojpeg.h>
 #include <unistd.h>
 #include <vector>
@@ -43,7 +45,7 @@ constexpr uint64_t kSlowIvcWriteMs = 20;
 constexpr uint64_t kRobotCiPerceptionMs = 20000;
 constexpr uint64_t kRobotCiTotalMs = 62000;
 constexpr int kConfigAckTimeoutMs = 1000;
-constexpr int kConfigBeginAckTimeoutMs = 45000;
+constexpr int kConfigBeginAckTimeoutMs = 90000;
 constexpr int kConfigRetryCount = 3;
 
 std::atomic<bool> g_stop{false};
@@ -145,9 +147,18 @@ public:
             (sizeof(config) + ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE - 1U) /
             ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE);
         const uint32_t crc = robot_config_crc32(&config, sizeof(config));
-        uint32_t session = static_cast<uint32_t>(monotonic_ms()) ^
-                           static_cast<uint32_t>(getpid());
+        uint32_t session = 0;
+        ssize_t random_size;
+        do {
+            random_size = getrandom(&session, sizeof(session), 0);
+        } while (random_size < 0 && errno == EINTR && !g_stop.load());
+        if (random_size != sizeof(session)) {
+            LOGE("Failed to create robot configuration session: %s", std::strerror(errno));
+            return false;
+        }
         if (session == 0U) session = 1U;
+        session_id_ = session;
+        config_crc_ = crc;
 
         robot_config_message_v1 message{};
         initialize_config_message(message, ROBOT_CONFIG_BEGIN, session,
@@ -186,6 +197,51 @@ public:
         return true;
     }
 
+    bool wait_control_complete(const perception::PerceptionResultV2& last) {
+        const uint64_t deadline = monotonic_ms() + 10000;
+        std::printf("ROBOT_CONTROL_WAIT session=%u timeout_ms=10000\n", session_id_);
+        std::fflush(stdout);
+        robot_config_message_v1 query{};
+        initialize_config_message(query, ROBOT_CONTROL_FINISH, session_id_, 0, config_crc_);
+        auto heartbeat = last;
+        while (!g_stop.load() && monotonic_ms() < deadline) {
+            bool dropped = false;
+            ++heartbeat.sequence;
+            if (!send(heartbeat, dropped) || dropped) return false;
+            const int sent = axivc_send(channel_, &query, sizeof(query), 0);
+            if (sent != 0 && sent != -EAGAIN && sent != -ETIMEDOUT) return false;
+            robot_config_message_v1 reply{};
+            size_t size = 0;
+            const int received = axivc_recv(channel_, &reply, sizeof(reply), &size, 100);
+            if (received == -ETIMEDOUT || received == -EAGAIN) continue;
+            if (received != 0 || size != sizeof(reply) ||
+                reply.magic != ROBOT_CONFIG_MESSAGE_MAGIC ||
+                reply.version != ROBOT_CONFIG_MESSAGE_VERSION) return false;
+            if (reply.session_id != session_id_) continue;
+            if (reply.type == ROBOT_CONFIG_ACK || reply.type == ROBOT_CONFIG_APPLIED) continue;
+            if (reply.type != ROBOT_CONTROL_RESULT || reply.config_crc32 != config_crc_ ||
+                reply.payload_size != sizeof(robot_control_result_v1)) return false;
+            robot_control_result_v1 result{};
+            std::memcpy(&result, reply.payload, sizeof(result));
+            if (reply.status == ROBOT_CONTROL_STATUS_PENDING) {
+                usleep(50000);
+                continue;
+            }
+            if (reply.status != ROBOT_CONFIG_STATUS_OK || result.error_code != 0 ||
+                result.completed_cycles == 0 || result.checks != ROBOT_CONTROL_CHECKS_REQUIRED) {
+                LOGE("Robot control failed session=%u status=%u state=%u error=%d",
+                     session_id_, reply.status, result.controller_state, result.error_code);
+                return false;
+            }
+            std::printf("ROBOT_CONTROL_DONE session=%u status=ok cycles=%u checks=%u\n",
+                        session_id_, result.completed_cycles, result.checks);
+            std::fflush(stdout);
+            return true;
+        }
+        LOGE("Robot control completion timeout/interrupted session=%u", session_id_);
+        return false;
+    }
+
 private:
     static void initialize_config_message(robot_config_message_v1& message,
                                           uint8_t type, uint32_t session,
@@ -203,37 +259,43 @@ private:
     bool exchange_config_message(const robot_config_message_v1& message,
                                  uint8_t expected_type,
                                  uint16_t expected_next) {
-        for (int attempt = 1; attempt <= kConfigRetryCount; ++attempt) {
-            const int timeout_ms = message.type == ROBOT_CONFIG_BEGIN ?
-                kConfigBeginAckTimeoutMs : kConfigAckTimeoutMs;
-            const int send_status = axivc_send(
-                channel_, &message, sizeof(message), timeout_ms);
-            if (send_status != 0) {
-                LOGE("Robot config send failed type=%u chunk=%u attempt=%d: %s (%d)",
-                     message.type, message.chunk_index, attempt,
-                     axivc_strerror(send_status), send_status);
-                continue;
+        const uint64_t deadline = monotonic_ms() + (message.type == ROBOT_CONFIG_BEGIN ?
+            kConfigBeginAckTimeoutMs : kConfigAckTimeoutMs * kConfigRetryCount);
+        uint64_t resend_at = 0;
+        int attempt = 0;
+        while (!g_stop.load() && monotonic_ms() < deadline) {
+            if (monotonic_ms() >= resend_at) {
+                ++attempt;
+                const int send_status = axivc_send(channel_, &message, sizeof(message), 0);
+                if (send_status != 0 && send_status != -EAGAIN && send_status != -ETIMEDOUT) {
+                    LOGE("Robot config send failed type=%u chunk=%u attempt=%d: %s (%d)",
+                         message.type, message.chunk_index, attempt,
+                         axivc_strerror(send_status), send_status);
+                    return false;
+                }
+                resend_at = monotonic_ms() + 1000;
             }
 
             robot_config_message_v1 response{};
             size_t response_size = 0;
+            const uint64_t now = monotonic_ms();
+            if (now >= deadline) break;
             const int recv_status = axivc_recv(
                 channel_, &response, sizeof(response), &response_size,
-                timeout_ms);
-            if (recv_status != 0) {
-                LOGW("Robot config ACK timeout type=%u chunk=%u attempt=%d: %s (%d)",
-                     message.type, message.chunk_index, attempt,
-                     axivc_strerror(recv_status), recv_status);
+                static_cast<int>(std::min<uint64_t>(1000, deadline - now)));
+            if (recv_status == -ETIMEDOUT || recv_status == -EAGAIN) {
+                if (attempt == 1 || attempt % 5 == 0) {
+                    std::printf("ROBOT_CONFIG_WAIT type=%u session=%u attempt=%d\n",
+                                message.type, session_id_, attempt);
+                    std::fflush(stdout);
+                }
                 continue;
             }
-            if (response_size != sizeof(response) ||
-                response.magic != ROBOT_CONFIG_MESSAGE_MAGIC ||
-                response.version != ROBOT_CONFIG_MESSAGE_VERSION ||
-                response.session_id != message.session_id ||
-                response.type != expected_type ||
-                response.status != ROBOT_CONFIG_STATUS_OK ||
-                response.chunk_count != expected_next ||
-                response.config_crc32 != message.config_crc32) {
+            if (recv_status != 0) return false;
+            const auto verdict = config_reply_policy(response, response_size, message,
+                                                     expected_type, expected_next);
+            if (verdict == IvcReply::Ignore) continue;
+            if (verdict == IvcReply::Reject) {
                 LOGE("Robot config ACK invalid type=%u chunk=%u response_type=%u "
                      "status=%u next=%u size=%zu",
                      message.type, message.chunk_index, response.type,
@@ -252,6 +314,8 @@ private:
     }
 
     axivc_channel_t* channel_ = nullptr;
+    uint32_t session_id_ = 0;
+    uint32_t config_crc_ = 0;
 };
 
 void signal_handler(int) {
@@ -839,6 +903,10 @@ int main(int argc, char** argv) {
         ++emitted;
         maybe_report_status(monotonic_ms());
         if (robot_ci_once && elapsed_ms >= kRobotCiTotalMs) {
+            if (!ivc.wait_control_complete(result)) {
+                transport_failed = true;
+                break;
+            }
             std::printf("STARRY_ROBOT_CI_DONE perf=%s duration_ms=%llu\n",
                         robot_ci_perf_passed ? "pass" : "fail",
                         static_cast<unsigned long long>(elapsed_ms));

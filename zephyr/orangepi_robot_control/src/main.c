@@ -290,6 +290,19 @@ int main(void)
 			}
 			if (robot_config_is_message(message.bytes, length)) {
 				struct robot_config_message_v1 response = {0};
+				if (message.config.type == ROBOT_CONTROL_FINISH) {
+					k_mutex_lock(&controller_lock, K_FOREVER);
+					robot_controller_control_result(&controller,
+						config_receiver.applied_session_id,
+						config_receiver.applied_crc32, &message.config, &response);
+					k_mutex_unlock(&controller_lock);
+					/* The main loop is the sole reverse-ring producer. */
+					status = robot_ivc_send(&ivc, &response, sizeof(response), 0);
+					if (status != 0 && status != -EAGAIN && status != -ETIMEDOUT) {
+						printk("ZEPHYR_CONTROL_RESULT_SEND_FAILED status=%d\n", status);
+					}
+					continue;
+				}
 				struct robot_runtime_config_v1 candidate = {0};
 				bool applied = false;
 				bool ready = true;

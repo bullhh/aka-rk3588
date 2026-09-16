@@ -1,5 +1,6 @@
 #include "protocol/robot_runtime_config_v1.h"
 #include "robot/lekiwi_runtime_config.hpp"
+#include "robot/ivc_reply_policy.hpp"
 #include "robot_config_receiver.h"
 
 #include <cassert>
@@ -64,6 +65,20 @@ int main() {
         (sizeof(config) + ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE - 1U) /
         ROBOT_CONFIG_CHUNK_PAYLOAD_SIZE);
     const uint32_t session = 0x12345678U;
+    auto request = make_message(ROBOT_CONFIG_CHUNK, session, chunks, crc);
+    request.chunk_index = 2;
+    auto reply = make_message(ROBOT_CONFIG_ACK, session, 3, crc);
+    reply.chunk_index = 2;
+    assert(config_reply_policy(reply, sizeof(reply), request, ROBOT_CONFIG_ACK, 3) == IvcReply::Accept);
+    assert(config_reply_policy(reply, sizeof(reply), request, ROBOT_CONFIG_APPLIED, 3) == IvcReply::Ignore);
+    reply.chunk_count = 1;
+    assert(config_reply_policy(reply, sizeof(reply), request, ROBOT_CONFIG_ACK, 3) == IvcReply::Ignore);
+    reply.session_id--;
+    assert(config_reply_policy(reply, sizeof(reply), request, ROBOT_CONFIG_ACK, 3) == IvcReply::Ignore);
+    reply.session_id = session;
+    reply.type = ROBOT_CONFIG_REJECTED;
+    assert(config_reply_policy(reply, sizeof(reply), request, ROBOT_CONFIG_ACK, 3) == IvcReply::Reject);
+    assert(config_reply_policy(reply, 1, request, ROBOT_CONFIG_ACK, 3) == IvcReply::Reject);
     robot_config_receiver receiver{};
     robot_config_receiver_init(&receiver);
     robot_runtime_config_v1 applied_config{};

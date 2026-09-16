@@ -83,11 +83,12 @@ IVC 接收结果并独占 UART6、底盘和机械臂。必须先用配套 TGOSKi
 一次帧率和最新识别状态，默认关闭每秒流水线诊断心跳。它与已经运行的 Zephyr 控制客户机
 共同构成完整的找球、抓球、找桶和放球流程。
 
-两个双客户机脚本都不接受参数。持续运行使用 `run_dual_pick.sh`；首次有限验收必须
+持续运行使用不带参数的 `run_dual_pick.sh`；CI 入口必须通过 `--min-fps` 显式指定
+门槛，不根据客户机类型自动选择。首次有限验收必须
 架空车轮并确认机械臂范围安全，然后执行：
 
 ```bash
-./run_dual_pick_ci_once.sh
+./run_dual_pick_ci_once.sh --min-fps 28
 ```
 
 Linux+Zephyr 与 StarryOS+Zephyr 使用同一个感知程序和同一个启动入口。
@@ -102,8 +103,18 @@ Linux+Zephyr 与 StarryOS+Zephyr 使用同一个感知程序和同一个启动�
 程序退出后，Zephyr 会安全停车并重新等待下一次 publisher，因此无需重启客户机即可
 再次执行同一个入口。
 
-该脚本使用真实摄像头和 RKNN 测量两个 10 秒性能窗口，再发送确定性测试场景。通过只能
-证明感知、IVC、车轮命令和机械臂动作序列完成，不能证明车辆地面移动或真实夹球。
+该脚本使用真实摄像头和 RKNN 测量两个 10 秒性能窗口。tgoskits 的各自 board TOML
+通过命令参数传入门槛：Linux+Zephyr 为 28 FPS，StarryOS+Zephyr 为 19 FPS；
+手工测试 StarryOS 时将上例参数改为 `--min-fps 19`。
+CI 脚本只检查感知客户机的两个 `STARRY_ROBOT_CI_PERF_WINDOW`、同配置会话的
+`ROBOT_CONTROL_DONE ... status=ok cycles=1 checks=7`、
+`STARRY_ROBOT_CI_DONE perf=pass`（至少 62000 ms）和进程退出码，不依赖 Zephyr 端日志。
+感知程序在发送 62 秒场景后，通过原 IVC 查询 Zephyr 的控制结果，最多等待 10 秒；
+只有动作周期结束、机械臂终点反馈通过、停车命令成功且无故障才确认完成。
+缺少确认、旧会话确认、控制失败、超时或非零退出均失败。BEGIN 启动握手最多等待
+90 秒，配置完成后才开始性能计时；普通运行仍为 `./run_dual_pick.sh`。
+该结果不证明真实夹球、车轮实测速度或看门狗实验。协议与回滚见
+[双客户机完成协议](docs/dual-ci-control-result.md)。
 
 运行时默认每累计 60 条结果应看到：
 
