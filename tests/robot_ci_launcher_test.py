@@ -6,10 +6,12 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPLETE = """[ROBOT_CI] PERF_BEGIN windows=2 duration_s=10 min_fps=28.00
+COMPLETE = """[ROBOT_CI] WHEEL_CHECK=PASS wheels=3 directions=2 stopped=1
+[ROBOT_CI] PERF_BEGIN windows=2 duration_s=10 min_fps=28.00
 [ROBOT_CI] PERF_WINDOW index=1/2 elapsed_s=10.00 processed=300 effective_fps=30.00
 [ROBOT_CI] PERF_WINDOW index=2/2 elapsed_s=10.00 processed=300 effective_fps=30.00
 [ROBOT_CI] PERF_SUMMARY windows=2 elapsed_s=20.00 processed=600 effective_fps=30.00
+[ROBOT_CI] WHEEL_STOP=PASS wheels=3
 [ROBOT_CI] SAFE_POSE=PASS pose=carry source=flow
 [ROBOT_CI] ATTEMPT_PASS flow=1 perf_windows=2 ball_seen=0 ball_drive=1 bucket_drive=1 safe_stop=1
 """
@@ -49,6 +51,10 @@ class RobotCiLauncherTest(unittest.TestCase):
             (COMPLETE.replace("index=2/2", "index=1/2"), 0),
             (COMPLETE.replace("safe_stop=1", "safe_stop=0"), 0),
             (COMPLETE.replace("ball_drive=1", "ball_drive=0"), 0),
+            (COMPLETE.replace("[ROBOT_CI] WHEEL_CHECK=PASS wheels=3 directions=2 stopped=1\n", ""), 0),
+            (COMPLETE.replace("[ROBOT_CI] WHEEL_STOP=PASS wheels=3\n", ""), 0),
+            (COMPLETE.replace("directions=2", "directions=1"), 0),
+            (COMPLETE.replace("[ROBOT_CI] WHEEL_STOP=PASS wheels=3", "[ROBOT_CI] WHEEL_STOP=PASS wheels=2"), 0),
             (COMPLETE + COMPLETE, 0),
         ]:
             with self.subTest(output=output, status=status):

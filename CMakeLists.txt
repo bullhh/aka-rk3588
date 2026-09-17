@@ -14,6 +14,16 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME robot_ci_launcher
       COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/robot_ci_launcher_test.py)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(TEST_LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
+    add_executable(wheel_feedback_driver tests/wheel_feedback_driver.cpp
+        robot/omni_base.cpp feetech/feetech_bus.cpp)
+    target_include_directories(wheel_feedback_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(wheel_feedback_driver PkgConfig::TEST_LIBUSB)
+    add_test(NAME wheel_feedback COMMAND ${PYTHON3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/wheel_feedback_test.py $<TARGET_FILE:wheel_feedback_driver>)
+  endif()
   add_executable(feetech_motion_policy_test
       tests/feetech_motion_policy_test.cpp
       robot/feetech_motion_policy.cpp

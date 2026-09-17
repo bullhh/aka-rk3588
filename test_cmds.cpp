@@ -863,15 +863,16 @@ int cmd_test_base(const char* uart_dev, int argc, char** argv)
     else if (strcmp(cmd, "rotate-left") == 0)  ok = base.rotate_left(level);
     else if (strcmp(cmd, "rotate-right") == 0) ok = base.rotate_right(level);
     else if (strcmp(cmd, "stop") == 0)         ok = base.stop();
+    else if (strcmp(cmd, "verify") == 0)       ok = base.verify_wheel_motion();
     else {
-        printf("Usage: tennis test-base [dev] <forward|backward|left|right|rotate-left|rotate-right|stop> [level]\n");
+        printf("Usage: tennis test-base [dev] <forward|backward|left|right|rotate-left|rotate-right|stop|verify> [level]\n");
         base.stop();
         return 2;
     }
 
-    if (strcmp(cmd, "stop") != 0) {
+    if (strcmp(cmd, "stop") != 0 && strcmp(cmd, "verify") != 0) {
         usleep(duration_ms * 1000);
-        base.stop();
+        ok = base.stop() && ok;
     }
     printf("test-base %s\n", ok ? "ok" : bus.last_error().c_str());
     return ok ? 0 : 1;

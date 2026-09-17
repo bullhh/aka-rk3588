@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <cstdio>
+#include <cstdint>
+#include <time.h>
+#include <unistd.h>
 
 OmniBase::OmniBase(feetech::FeetechBus& bus) : bus_(bus) {}
 
@@ -84,11 +88,70 @@ bool OmniBase::write_wheels(int left_raw, int back_raw, int right_raw) {
         {back_id_, back_raw},
         {right_id_, right_raw},
     };
-    return bus_.sync_write_u16(feetech::reg::GOAL_VELOCITY, values, true);
+    const bool ok = bus_.sync_write_u16(feetech::reg::GOAL_VELOCITY, values, true);
+    if (!ok && command_error_.empty()) {
+        command_error_ = bus_.last_error().empty() ? "wheel command failed" : bus_.last_error();
+    }
+    return ok;
 }
 
 bool OmniBase::stop() {
     return write_wheels(0, 0, 0);
+}
+
+bool OmniBase::wait_for_wheels(int direction, bool (*cancelled)()) {
+    const auto now_ms = []() -> uint64_t {
+        timespec ts{};
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return uint64_t(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+    };
+    const uint64_t deadline = now_ms() + 2000;
+    const int ids[] = {left_id_, back_id_, right_id_};
+    int velocities[3] = {};
+    int stable = 0;
+    do {
+        if (cancelled && cancelled()) return false;
+        bool matched = true;
+        for (int i = 0; i < 3; ++i) {
+            if (!bus_.read_u16(ids[i], feetech::reg::PRESENT_VELOCITY, velocities[i], true)) {
+                fprintf(stderr, "[WHEEL] feedback read failed id=%d: %s\n",
+                        ids[i], bus_.last_error().c_str());
+                return false;
+            }
+            matched = matched && (direction == 0 ? velocities[i] == 0
+                                                 : velocities[i] * direction >= 20);
+        }
+        if (now_ms() >= deadline) break;
+        stable = matched ? stable + 1 : 0;
+        if (stable >= 3) {
+            printf("[WHEEL] feedback direction=%d ids=%d,%d,%d velocity=%d,%d,%d samples=%d\n",
+                   direction, ids[0], ids[1], ids[2], velocities[0], velocities[1], velocities[2], stable);
+            return true;
+        }
+        usleep(50000);
+    } while (now_ms() < deadline);
+    fprintf(stderr, "[WHEEL] feedback timeout direction=%d velocity=%d,%d,%d\n",
+            direction, velocities[0], velocities[1], velocities[2]);
+    return false;
+}
+
+bool OmniBase::stop_and_verify(bool (*cancelled)()) {
+    return stop() && wait_for_wheels(0, cancelled);
+}
+
+bool OmniBase::verify_wheel_motion(bool (*cancelled)()) {
+    bool ok = commands_ok() && stop_and_verify(cancelled);
+    for (int direction : {1, -1}) {
+        if (!ok || (cancelled && cancelled())) { ok = false; break; }
+        // Pure rotation commands all three wheels; no wheel can be omitted.
+        ok = drive_body(0.0f, 0.0f, direction * 15.0f) &&
+             wait_for_wheels(direction, cancelled);
+        const bool stopped = stop_and_verify(cancelled);
+        ok = ok && stopped;
+    }
+    // Also send a stop after a failed write/read, timeout or cancellation.
+    const bool stopped = stop_and_verify(cancelled);
+    return ok && stopped && commands_ok();
 }
 
 OmniBase::SpeedLevel OmniBase::speed_level(int level) const {

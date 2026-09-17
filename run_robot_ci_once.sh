@@ -8,6 +8,9 @@
 set -u
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# Relocated CI deployments must use their own bundled RKNN runtime.
+LD_LIBRARY_PATH="${SCRIPT_DIR}/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH
 MIN_FPS="${1:-12.5}"
 MODEL_PATH="${MODEL_PATH:-${SCRIPT_DIR}/models/tennis.rknn}"
 FEETECH_DEV="${FEETECH_DEV:-auto}"
@@ -95,6 +98,13 @@ function field(key, i, pair) {
 }
 function numeric(value) { return value ~ /^[0-9]+([.][0-9][0-9]?)?$/ }
 { sub(/\r$/, ""); print; fflush() }
+/^\[ROBOT_CI\] WHEEL_CHECK=PASS / {
+    if (wheel_check++ || begun || field("wheels") != "3" ||
+        field("directions") != "2" || field("stopped") != "1") invalid = 1
+}
+/^\[ROBOT_CI\] WHEEL_STOP=PASS / {
+    if (wheel_stop++ || !summary || completed || field("wheels") != "3") invalid = 1
+}
 /^\[ROBOT_CI\] PERF_BEGIN / {
     if (begun++ || field("windows") != "2" || field("min_fps") + 0 != minimum + 0) invalid = 1
 }
@@ -111,7 +121,7 @@ function numeric(value) { return value ~ /^[0-9]+([.][0-9][0-9]?)?$/ }
 }
 /^\[ROBOT_CI\] SAFE_POSE=PASS pose=carry source=flow$/ { safe = 1 }
 /^\[ROBOT_CI\] ATTEMPT_PASS / {
-    if (completed++ || !summary || !safe || field("flow") != "1" ||
+    if (completed++ || !summary || !safe || wheel_check != 1 || wheel_stop != 1 || field("flow") != "1" ||
         field("perf_windows") != "2" || field("safe_stop") != "1" ||
         field("ball_drive") != "1" || field("bucket_drive") != "1") invalid = 1
 }

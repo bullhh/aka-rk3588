@@ -473,7 +473,7 @@ static void usage(const char* prog) {
     LOGI("  %s test-arm   [uart_dev] <cmd|a0 a1 a2>  -- arm servo test (default /dev/ttyUSB1)", prog);
     LOGI("  %s test-bucket [uvc_index]               -- red bucket detect -> bucket.jpg", prog);
     LOGI("  %s test-feetech [uart_dev] <scan|read|torque-off> -- STS3215 bus test", prog);
-    LOGI("  %s test-base [uart_dev] <forward|backward|left|right|rotate-left|rotate-right|stop> [level]", prog);
+    LOGI("  %s test-base [uart_dev] <forward|backward|left|right|rotate-left|rotate-right|stop|verify> [level]", prog);
     LOGI("  %s test-new-arm [uart_dev] <calibrate|calib-check|config-check|pos|grab|ik-pick|ik-put|release|show|torque-off>", prog);
     LOGI("  %s test-new-arm [uart_dev] task <home|carry|place-approach|place-release|place-cycle>", prog);
 }
@@ -718,6 +718,12 @@ int main(int argc, char** argv)
             LOGI("Bucket/place demo enabled: FIND_BUCKET -> APPROACH -> PUT_BALL -> exit");
         }
         if (robot_ci_once) {
+            if (!omni_base_ptr->verify_wheel_motion([] { return g_stop_requested != 0; })) {
+                printf("[ROBOT_CI] ATTEMPT_FAIL reason=wheel_feedback\n");
+                cleanup_and_exit();
+                return 1;
+            }
+            printf("[ROBOT_CI] WHEEL_CHECK=PASS wheels=3 directions=2 stopped=1\n");
             LOGI("Robot CI enabled: one simulated pick/place flow with real hardware motion");
         }
     } else {
@@ -878,6 +884,12 @@ int main(int argc, char** argv)
 
     // ── Chase loop ────────────────────────────────────────────────────────────
     while (true) {
+        if (robot_ci_once && !omni_base_ptr->commands_ok()) {
+            printf("[ROBOT_CI] ATTEMPT_FAIL reason=wheel_command error=%s\n",
+                   omni_base_ptr->command_error().c_str());
+            cleanup_and_exit();
+            return 1;
+        }
         if (robot_ci_perf_start_pending) {
             perf_window.reset(capture.stats());
             robot_ci_perf_started = true;
@@ -1280,13 +1292,16 @@ int main(int argc, char** argv)
                     dup2(g_devnull, STDERR_FILENO);
                 }
                 if (robot_ci_once) {
-                    if (!omni_base_ptr->stop() || robot_ci_perf_results.size() != 2 ||
+                    const bool stopped = omni_base_ptr->stop_and_verify(
+                        [] { return g_stop_requested != 0; });
+                    if (!stopped || !omni_base_ptr->commands_ok() || robot_ci_perf_results.size() != 2 ||
                         !robot_ci_ball_drive_seen || !robot_ci_bucket_drive_seen) {
                         printf("[ROBOT_CI] ATTEMPT_FAIL reason=incomplete_flow_or_stop_failure\n");
                         cleanup_and_exit();
                         return 1;
                     }
                     dup2(g_saved_stderr, STDERR_FILENO);
+                    printf("[ROBOT_CI] WHEEL_STOP=PASS wheels=3\n");
                     // The put sequence finishes with CARRY followed only by a
                     // gripper-close step, so all arm joints are already in the
                     // compact driving pose before CI may remove power.

@@ -389,3 +389,29 @@ config/lekiwi_arm_poses.txt
 ./build/tennis test-motor /dev/ttyS3 speed=30
 ./build/tennis models/tennis.rknn /dev/ttyS3 0 /dev/ttyUSB1
 ```
+
+## Robot CI 车轮反馈验收
+
+`run_robot_ci_once.sh` 仍要求真实摄像头、NPU、机械臂和车轮；不要求现场有球。
+底盘必须架空。性能计时开始前，以低速正、反向驱动三只轮子，每个方向都必须
+连续三次读取到三轮同向非零速度；各轮询阶段期限为 2 秒。
+预检中的每次停止以及完整流程结束时，必须连续三次读到三轮速度均为零。
+通信失败、轮子不响应、方向错误、停车失败或取消请求都会导致本次尝试失败。
+流程中的轮子命令错误会保留，不能被之后成功发送的停车命令清除。
+
+`WHEEL_CHECK=PASS` 和最终 `WHEEL_STOP=PASS` 都是启动器判定成功的必要条件，
+缺少反馈检查的旧程序不能通过新版启动器。反馈检查位于两个性能窗口之外，
+FPS 仍衡量真实采集、推理和原有控制路径，门槛由调用参数设置。
+硬件模式保留一次重试，最终成功仍须完成一整次合格流程。
+
+可单独运行 `./build/tennis test-base auto verify` 检查轮子响应和停车。
+宿主故障回归复用 CMake/CTest：
+
+```sh
+cmake -S . -B /tmp/aka-wheel-tests -DBUILD_TESTING=ON
+cmake --build /tmp/aka-wheel-tests --target wheel_feedback_driver feetech_motion_policy_test
+ctest --test-dir /tmp/aka-wheel-tests --output-on-failure
+```
+
+串口测试夹具覆盖正常响应、单轮/全部不转、方向错误、停车失败、反馈超时和
+命令失败后的错误保留；它验证真实串口协议与判定代码，实体响应仍需板卡验收。
