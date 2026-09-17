@@ -98,48 +98,36 @@ function field(key, i, pair) {
 }
 function numeric(value) { return value ~ /^[0-9]+([.][0-9][0-9]?)?$/ }
 { sub(/\r$/, ""); print; fflush() }
-/^\[ROBOT_CI\] WHEEL_CHECK=PASS / {
-    if (wheel_check++ || begun || field("wheels") != "3" ||
-        field("directions") != "2" || field("stopped") != "1") invalid = 1
-}
-/^\[ROBOT_CI\] WHEEL_STOP=PASS / {
-    if (wheel_stop++ || !summary || completed || field("wheels") != "3") invalid = 1
-}
-/^\[ROBOT_CI\] PERF_BEGIN / {
-    if (begun++ || field("windows") != "2" || field("min_fps") + 0 != minimum + 0) invalid = 1
-}
-/^\[ROBOT_CI\] PERF_WINDOW / {
-    elapsed = field("elapsed_s")
-    if (!begun || summary || field("index") != ((windows + 1) "/2") ||
-        !numeric(elapsed) || elapsed + 0 < 10 || !numeric(field("effective_fps"))) invalid = 1
-    windows++
-}
-/^\[ROBOT_CI\] PERF_SUMMARY / {
+# Intermediate diagnostics do not establish success. Only the application can
+# certify that inference, performance, actuators and cleanup all completed.
+/^\[ROBOT_CI\] APPLICATION_PASS / {
     fps = field("effective_fps")
-    if (summary++ || windows != 2 || field("windows") != "2" ||
-        !numeric(fps) || fps + 0 < minimum + 0) invalid = 1
-}
-/^\[ROBOT_CI\] SAFE_POSE=PASS pose=carry source=flow$/ { safe = 1 }
-/^\[ROBOT_CI\] ATTEMPT_PASS / {
-    if (completed++ || !summary || !safe || wheel_check != 1 || wheel_stop != 1 || field("flow") != "1" ||
+    elapsed = field("elapsed_s")
+    processed = field("processed")
+    threshold = field("min_fps")
+    if (completed++ || exited || field("flow") != "1" ||
         field("perf_windows") != "2" || field("safe_stop") != "1" ||
-        field("ball_drive") != "1" || field("bucket_drive") != "1") invalid = 1
+        field("wheels") != "3" || field("directions") != "2" ||
+        field("ball_drive") != "1" || field("bucket_drive") != "1" ||
+        !numeric(threshold) || threshold + 0 != minimum + 0 ||
+        !numeric(fps) || fps + 0 < minimum + 0 ||
+        !numeric(elapsed) || elapsed + 0 < 20 ||
+        processed !~ /^[0-9]+$/ || processed + 0 <= 0) invalid = 1
 }
-/^\[ROBOT_CI\] ATTEMPT_FAIL / { invalid = 1 }
 /^ROBOT_PROCESS_EXIT / {
     if (exited++) invalid = 1
     status = field("status")
 }
 END {
     if (!exited || !numeric(status) || status + 0 != 0 || invalid ||
-        windows != 2 || !completed) {
+        completed != 1) {
         print "[ROBOT_CI] ATTEMPT_FAIL reason=incomplete_or_failed_process"
         exit 1
     }
 }' || app_status=$?
 
-    # A successful flow already ends in CARRY and emits SAFE_POSE=PASS before
-    # returning. On an early failure, reopen the released bus and recover to
+    # A successful application reports its verdict after CARRY, verified wheel
+    # stop and cleanup. On an early failure, reopen the released bus and recover to
     # that compact pose before retrying or allowing the CI service to finish.
     if [ "${app_status}" -eq 0 ]; then
         return 0

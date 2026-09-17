@@ -391,14 +391,21 @@ int cmd_test_yolo(const char* model_path, int uvc_index)
     }
 
     std::vector<detection> dets;
+    int inference_ret;
     {
         int sv = dup(STDOUT_FILENO), dn = open("/dev/null", O_WRONLY);
         dup2(dn, STDOUT_FILENO); close(dn);
-        detect_run(&ctx, rgb, mw, mh, FRAME_WIDTH, FRAME_HEIGHT, px, py, sc,
+        inference_ret = detect_run(&ctx, rgb, mw, mh, FRAME_WIDTH, FRAME_HEIGHT, px, py, sc,
                    0.5f, 0.45f, dets, nullptr, nullptr, nullptr, nullptr);
         fflush(stdout); dup2(sv, STDOUT_FILENO); close(sv);
     }
-    detect_deinit(&ctx); free(rgb);
+    const int release_ret = detect_deinit(&ctx);
+    free(rgb);
+    if (inference_ret < 0 || release_ret != 0) {
+        LOGE("YOLO test failed: inference=%d release=%d", inference_ret, release_ret);
+        free(disp);
+        return 1;
+    }
 
     LOGI("Detections: %d", (int)dets.size());
     for (int i = 0; i < (int)dets.size(); i++) {

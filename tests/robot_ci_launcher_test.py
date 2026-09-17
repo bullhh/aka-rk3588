@@ -13,7 +13,7 @@ COMPLETE = """[ROBOT_CI] WHEEL_CHECK=PASS wheels=3 directions=2 stopped=1
 [ROBOT_CI] PERF_SUMMARY windows=2 elapsed_s=20.00 processed=600 effective_fps=30.00
 [ROBOT_CI] WHEEL_STOP=PASS wheels=3
 [ROBOT_CI] SAFE_POSE=PASS pose=carry source=flow
-[ROBOT_CI] ATTEMPT_PASS flow=1 perf_windows=2 ball_seen=0 ball_drive=1 bucket_drive=1 safe_stop=1
+[ROBOT_CI] APPLICATION_PASS flow=1 perf_windows=2 processed=600 elapsed_s=20.00 effective_fps=30.00 min_fps=28.00 wheels=3 directions=2 ball_seen=0 ball_drive=1 bucket_drive=1 safe_stop=1
 """
 
 
@@ -48,19 +48,31 @@ class RobotCiLauncherTest(unittest.TestCase):
             ("", 0), (COMPLETE, 7),
             (COMPLETE.replace("effective_fps=30.00", "effective_fps=27.00"), 0),
             (COMPLETE.replace("min_fps=28.00", "min_fps=15.00"), 0),
-            (COMPLETE.replace("index=2/2", "index=1/2"), 0),
+            (COMPLETE.replace("APPLICATION_PASS", "ATTEMPT_PASS"), 0),
+            (COMPLETE.replace("perf_windows=2", "perf_windows=1"), 0),
             (COMPLETE.replace("safe_stop=1", "safe_stop=0"), 0),
             (COMPLETE.replace("ball_drive=1", "ball_drive=0"), 0),
-            (COMPLETE.replace("[ROBOT_CI] WHEEL_CHECK=PASS wheels=3 directions=2 stopped=1\n", ""), 0),
-            (COMPLETE.replace("[ROBOT_CI] WHEEL_STOP=PASS wheels=3\n", ""), 0),
+            (COMPLETE[:COMPLETE.index("[ROBOT_CI] APPLICATION_PASS")], 0),
+            (COMPLETE.replace("processed=600", "processed=0"), 0),
+            (COMPLETE.replace("elapsed_s=20.00", "elapsed_s=19.99"), 0),
             (COMPLETE.replace("directions=2", "directions=1"), 0),
-            (COMPLETE.replace("[ROBOT_CI] WHEEL_STOP=PASS wheels=3", "[ROBOT_CI] WHEEL_STOP=PASS wheels=2"), 0),
+            (COMPLETE.replace("wheels=3", "wheels=2"), 0),
             (COMPLETE + COMPLETE, 0),
         ]:
             with self.subTest(output=output, status=status):
                 result = self.launch(output, status)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertNotIn("RESULT=PASS", result.stdout)
+
+    def test_only_the_final_application_verdict_establishes_success(self):
+        verdict = COMPLETE[COMPLETE.index("[ROBOT_CI] APPLICATION_PASS"):]
+        passed = self.launch(verdict)
+        self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+        # Failed runs may still print arbitrary diagnostic summaries.
+        diagnostics = COMPLETE[:COMPLETE.index("[ROBOT_CI] APPLICATION_PASS")]
+        failed = self.launch(diagnostics + "Different error wording\n", 1)
+        self.assertNotEqual(failed.returncode, 0, failed.stdout)
+        self.assertNotIn("RESULT=PASS", failed.stdout)
 
     def test_invalid_threshold_never_runs_the_application(self):
         for minimum in ("NaN", "0", "-1", "1001", "28 trailing"):

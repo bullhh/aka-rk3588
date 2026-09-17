@@ -53,9 +53,9 @@ int detect_init(const char* model_path, rknn_app_context_t* ctx)
     return 0;
 }
 
-void detect_deinit(rknn_app_context_t* ctx)
+int detect_deinit(rknn_app_context_t* ctx)
 {
-    release_yolov8_model(ctx);
+    return release_yolov8_model(ctx);
 }
 
 // ── Inference ─────────────────────────────────────────────────────────────────
@@ -206,7 +206,8 @@ int detect_run(rknn_app_context_t* ctx,
 
     // 7. Release
     gettimeofday(&t_stage, nullptr);
-    rknn_outputs_release(ctx->rknn_ctx, n_out, outputs);
+    ret = rknn_outputs_release(ctx->rknn_ctx, n_out, outputs);
+    if (ret < 0) { fprintf(stderr, "[detect] rknn_outputs_release %d\n", ret); return -1; }
     long t_release_us = elapsed_us(t_stage);
 
     long t_total = elapsed_us(t_start);

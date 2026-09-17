@@ -130,14 +130,21 @@ static int                 g_saved_stderr = -1;
 static int                 g_devnull    = -1;
 static volatile sig_atomic_t g_stop_requested = 0;
 
-static void cleanup_and_exit() {
-    if (g_drive)    g_drive->standby();
-    else if (g_motor) g_motor->standby();
+static bool cleanup_and_exit(bool drive_stopped = false) {
+    if (!drive_stopped) {
+        if (g_drive) g_drive->standby();
+        else if (g_motor) g_motor->standby();
+    }
     if (g_capture)  g_capture->close();
-    if (g_rknn_ctx) detect_deinit(g_rknn_ctx);
+    const int release_ret = g_rknn_ctx ? detect_deinit(g_rknn_ctx) : 0;
+    g_rknn_ctx = nullptr;
     if (g_feetech_bus) g_feetech_bus->close();
     if (g_saved_stderr >= 0 && g_devnull >= 0)
         dup2(g_saved_stderr, STDERR_FILENO);
+    if (release_ret != 0) {
+        fprintf(stderr, "[detect] model cleanup failed: %d\n", release_ret);
+    }
+    return release_ret == 0;
 }
 
 static void signal_handler(int /*sig*/) {
@@ -578,6 +585,7 @@ int main(int argc, char** argv)
     bool stop_after_chase = false;
     bool bucket_place_demo = false;
     bool robot_ci_once = false;
+    bool robot_ci_wheel_verified = false;
     const char* stop_env = getenv("LEKIWI_STOP_AFTER_CHASE");
     if (stop_env && strcmp(stop_env, "0") != 0 && strcmp(stop_env, "false") != 0)
         stop_after_chase = true;
@@ -723,6 +731,7 @@ int main(int argc, char** argv)
                 cleanup_and_exit();
                 return 1;
             }
+            robot_ci_wheel_verified = true;
             printf("[ROBOT_CI] WHEEL_CHECK=PASS wheels=3 directions=2 stopped=1\n");
             LOGI("Robot CI enabled: one simulated pick/place flow with real hardware motion");
         }
@@ -810,6 +819,10 @@ int main(int argc, char** argv)
     bool robot_ci_perf_start_pending = false;
     int robot_ci_warmup_inferences = 0;
     std::vector<PerfWindowResult> robot_ci_perf_results;
+    bool robot_ci_perf_passed = false;
+    uint64_t robot_ci_processed = 0;
+    double robot_ci_elapsed_s = 0.0;
+    double robot_ci_average_fps = 0.0;
     bool robot_ci_ball_seen = false;
     bool robot_ci_ball_drive_seen = false;
     int robot_ci_ball_drive_pulses = 0;
@@ -919,17 +932,21 @@ int main(int argc, char** argv)
                                                  robot_ci_perf_results[1].processed;
                 const double average_fps = total_s > 0.0
                     ? total_processed / total_s : 0.0;
-                dup2(g_saved_stderr, STDERR_FILENO);
-                printf("[ROBOT_CI] PERF_SUMMARY windows=2 elapsed_s=%.2f processed=%" PRIu64 " effective_fps=%.2f\n",
-                       total_s, total_processed, average_fps);
-                dup2(g_devnull, STDERR_FILENO);
-                if (average_fps < robot_ci_min_fps) {
+                if (!std::isfinite(average_fps) || average_fps < robot_ci_min_fps ||
+                    total_processed == 0 || robot_ci_perf_results[0].processed == 0 ||
+                    robot_ci_perf_results[1].processed == 0 ||
+                    robot_ci_perf_results[0].elapsed_s < 10.0 ||
+                    robot_ci_perf_results[1].elapsed_s < 10.0) {
                     dup2(g_saved_stderr, STDERR_FILENO);
                     printf("[ROBOT_CI] ATTEMPT_FAIL reason=performance_summary fps=%.2f threshold=%.2f windows=2\n",
                            average_fps, robot_ci_min_fps);
                     cleanup_and_exit();
                     return 1;
                 }
+                robot_ci_processed = total_processed;
+                robot_ci_elapsed_s = total_s;
+                robot_ci_average_fps = average_fps;
+                robot_ci_perf_passed = true;
                 if (!robot_ci_ball_seen) {
                     dup2(g_saved_stderr, STDERR_FILENO);
                     printf("[ROBOT_CI] BALL_NOT_SEEN windows=2 action=continue_simulated_flow\n");
@@ -1294,23 +1311,34 @@ int main(int argc, char** argv)
                 if (robot_ci_once) {
                     const bool stopped = omni_base_ptr->stop_and_verify(
                         [] { return g_stop_requested != 0; });
-                    if (!stopped || !omni_base_ptr->commands_ok() || robot_ci_perf_results.size() != 2 ||
+                    if (!stopped || g_stop_requested || !omni_base_ptr->commands_ok() ||
+                        !robot_ci_wheel_verified || !robot_ci_perf_passed || robot_ci_perf_results.size() != 2 ||
                         !robot_ci_ball_drive_seen || !robot_ci_bucket_drive_seen) {
                         printf("[ROBOT_CI] ATTEMPT_FAIL reason=incomplete_flow_or_stop_failure\n");
                         cleanup_and_exit();
                         return 1;
                     }
-                    dup2(g_saved_stderr, STDERR_FILENO);
+                    // The application owns the verdict. No success summary may
+                    // precede model cleanup or another fallible device action.
+                    const bool cleaned_up = cleanup_and_exit(true);
+                    if (!cleaned_up || g_stop_requested) {
+                        printf("[ROBOT_CI] ATTEMPT_FAIL reason=cleanup_or_interrupted\n");
+                        return 1;
+                    }
+                    printf("[ROBOT_CI] PERF_SUMMARY windows=2 elapsed_s=%.2f processed=%" PRIu64 " effective_fps=%.2f\n",
+                           robot_ci_elapsed_s, robot_ci_processed, robot_ci_average_fps);
                     printf("[ROBOT_CI] WHEEL_STOP=PASS wheels=3\n");
                     // The put sequence finishes with CARRY followed only by a
                     // gripper-close step, so all arm joints are already in the
                     // compact driving pose before CI may remove power.
                     printf("[ROBOT_CI] SAFE_POSE=PASS pose=carry source=flow\n");
-                    printf("[ROBOT_CI] ATTEMPT_PASS flow=1 perf_windows=2 ball_seen=%d ball_drive=%d bucket_drive=%d safe_stop=1\n",
+                    printf("[ROBOT_CI] APPLICATION_PASS flow=1 perf_windows=2 processed=%" PRIu64
+                           " elapsed_s=%.2f effective_fps=%.2f min_fps=%.2f wheels=3 directions=2"
+                           " ball_seen=%d ball_drive=%d bucket_drive=%d safe_stop=1\n",
+                           robot_ci_processed, robot_ci_elapsed_s, robot_ci_average_fps, robot_ci_min_fps,
                            robot_ci_ball_seen ? 1 : 0,
                            robot_ci_ball_drive_seen ? 1 : 0,
                            robot_ci_bucket_drive_seen ? 1 : 0);
-                    cleanup_and_exit();
                     return 0;
                 }
                 if (bucket_place_demo) {
