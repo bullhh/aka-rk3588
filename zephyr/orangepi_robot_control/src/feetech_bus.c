@@ -208,6 +208,26 @@ static int read_u16(struct feetech_bus *bus, uint8_t id, uint8_t address,
 	return 0;
 }
 
+int feetech_read_wheel_feedback(struct feetech_bus *bus, uint8_t index,
+                                int16_t *velocity, uint16_t *position)
+{
+    if (index >= ARRAY_SIZE(wheel_ids) || velocity == NULL || position == NULL) return -EINVAL;
+    const uint8_t params[] = {FEETECH_PRESENT_POSITION, 4U};
+    uint8_t reply[4];
+    size_t length = 0U;
+    int result = transact(bus, wheel_ids[index], FEETECH_INST_READ, params, sizeof(params),
+                          reply, sizeof(reply), &length, 0U, NULL);
+    if (result != 0) return result;
+    if (length != sizeof(reply)) return -EPROTO;
+    const uint16_t raw_position = (uint16_t)reply[0] | ((uint16_t)reply[1] << 8);
+    // Normalize sign-magnitude position to the 12-bit encoder circle.
+    *position = (uint16_t)((raw_position & 0x8000U) ?
+                          0U - (raw_position & 0x7fffU) : raw_position) & 0x0fffU;
+    uint16_t raw = (uint16_t)reply[2] | ((uint16_t)reply[3] << 8);
+    *velocity = (raw & 0x8000U) ? -(int16_t)(raw & 0x7fffU) : (int16_t)raw;
+    return 0;
+}
+
 static int sync_write_u16(struct feetech_bus *bus, uint8_t address,
 			  const uint8_t *ids, const uint16_t *values, size_t count)
 {

@@ -39,6 +39,7 @@ static const char *state_name(enum robot_state state)
 	case ROBOT_STATE_PLACE_CLOSE: return "place-close";
 	case ROBOT_STATE_RECOVER_OPEN: return "recover-open";
 	case ROBOT_STATE_RECOVER_HOME: return "recover-home";
+	case ROBOT_STATE_CI_WHEELS: return "ci-wheels";
 	case ROBOT_STATE_TEST_COMPLETE: return "test-complete";
 	case ROBOT_STATE_FAULT: return "fault";
 	default: return "unknown";
@@ -68,7 +69,8 @@ static void command_wheels(struct robot_controller *controller, int16_t left,
 		return;
 	}
 	if (feetech_send_diff_drive(controller->bus, left, right, label) != 0) {
-		controller->fault_code = -EIO;
+		if (controller->fault_code == 0) controller->fault_code = -EIO;
+		controller->motion.active = false;
 		set_state(controller, ROBOT_STATE_FAULT);
 		feetech_stop_wheels(controller->bus, "BUS_ERROR_STOP");
 		return;
@@ -80,10 +82,115 @@ static void command_wheels(struct robot_controller *controller, int16_t left,
 
 static void fault(struct robot_controller *controller, const char *reason, int status)
 {
-	controller->fault_code = status != 0 ? status : -EIO;
+	if (controller->fault_code == 0) controller->fault_code = status != 0 ? status : -EIO;
+	controller->motion.active = false;
 	command_wheels(controller, 0, 0, "FAULT_STOP");
 	set_state(controller, ROBOT_STATE_FAULT);
 	printk("ZEPHYR_ROBOT_FAULT reason=%s status=%d\n", reason, status);
+}
+
+/* Only the controller owner touches the bus. Read position and speed together
+ * for one wheel per 50 ms tick, bounding receive waits to one transaction. */
+static int wheel_direction(uint8_t stage)
+{
+    return stage == 1U ? 1 : stage == 3U ? -1 : 0;
+}
+
+static int wheel_position_delta(uint16_t current, uint16_t previous)
+{
+    const unsigned delta = (current - previous) & 0x0fffU;
+    return delta >= 2048U ? (int)delta - 4096 : (int)delta;
+}
+
+/* Four complete groups span three 150 ms intervals for each wheel. Stationary
+ * STS feedback can alternate by one encoder step and report +/-50 steps/s.
+ * Bound the whole position window, not individual deltas, to reject creeping.
+ * Motion also needs encoder progress, so noisy speed alone cannot pass it. */
+static bool wheel_window_matches(const struct robot_controller *controller, int direction)
+{
+    for (unsigned wheel = 0; wheel < 3U; ++wheel) {
+        uint16_t previous = controller->wheel_positions[controller->wheel_group][wheel];
+        int offset = 0, minimum = 0, maximum = 0;
+        for (unsigned group = 1; group < 4U; ++group) {
+            const uint16_t position =
+                controller->wheel_positions[(controller->wheel_group + group) % 4U][wheel];
+            const int delta = wheel_position_delta(position, previous);
+            if (direction != 0 && delta * direction < 2) return false;
+            offset += delta;
+            minimum = MIN(minimum, offset);
+            maximum = MAX(maximum, offset);
+            previous = position;
+        }
+        if (direction == 0 && maximum - minimum > 1) return false;
+    }
+    return true;
+}
+
+static void wheel_stage_begin(struct robot_controller *controller, uint8_t stage,
+                              int64_t now_ms)
+{
+    controller->wheel_stage = stage;
+    controller->wheel_index = 0U;
+    controller->wheel_groups = 0U;
+    controller->wheel_group = 0U;
+    controller->wheel_samples = 0U;
+    memset(controller->wheel_velocity, 0, sizeof(controller->wheel_velocity));
+    memset(controller->wheel_positions, 0, sizeof(controller->wheel_positions));
+    controller->wheel_sample_matches = true;
+    controller->wheel_deadline_ms = now_ms + 2000;
+    const int16_t speed = wheel_direction(stage) * 15;
+    controller->wheel_command_valid = false;
+    command_wheels(controller, -speed, speed, "CI_WHEEL_FEEDBACK");
+}
+
+static void wheel_feedback_tick(struct robot_controller *controller, int64_t now_ms)
+{
+    int16_t velocity;
+    uint16_t position;
+    if (now_ms >= controller->wheel_deadline_ms) {
+        printk("ZEPHYR_WHEEL_FEEDBACK_TIMEOUT stage=%u groups=%u samples=%u velocity=%d,%d,%d\n",
+               controller->wheel_stage, controller->wheel_groups, controller->wheel_samples,
+               controller->wheel_velocity[0], controller->wheel_velocity[1],
+               controller->wheel_velocity[2]);
+        fault(controller, "wheel-feedback-timeout", -ETIMEDOUT);
+        return;
+    }
+    int result = feetech_read_wheel_feedback(controller->bus,
+                                            controller->wheel_index, &velocity, &position);
+    if (result != 0) {
+        fault(controller, "wheel-feedback-read", result);
+        return;
+    }
+    const int direction = wheel_direction(controller->wheel_stage);
+    const uint8_t index = controller->wheel_index;
+    controller->wheel_velocity[index] = velocity;
+    controller->wheel_positions[controller->wheel_group][index] = position;
+    ++controller->wheel_samples;
+    controller->wheel_sample_matches &= direction == 0 ?
+        (velocity >= -50 && velocity <= 50) : velocity * direction >= 20;
+    if (++controller->wheel_index < 3U) return;
+    controller->wheel_index = 0U;
+    const bool matches = controller->wheel_sample_matches;
+    controller->wheel_sample_matches = true;
+    if (!matches) {
+        controller->wheel_groups = 0U;
+        controller->wheel_group = 0U;
+        return;
+    }
+    controller->wheel_groups = MIN(controller->wheel_groups + 1U, 4U);
+    controller->wheel_group = (controller->wheel_group + 1U) % 4U;
+    if (controller->wheel_groups < 4U || !wheel_window_matches(controller, direction)) return;
+    printk("ZEPHYR_WHEEL_FEEDBACK_PASS stage=%u direction=%d wheels=3 samples=4 "
+           "position_verified=1\n", controller->wheel_stage, direction);
+    if (controller->wheel_stage == 3U) {
+        controller->ci_checks |= ROBOT_CONTROL_CHECK_WHEEL_DIRECTIONS;
+    }
+    if (controller->wheel_stage == 4U) {
+        controller->ci_checks |= ROBOT_CONTROL_CHECK_WHEEL_STOP;
+        set_state(controller, ROBOT_STATE_TEST_COMPLETE);
+        return;
+    }
+    wheel_stage_begin(controller, controller->wheel_stage + 1U, now_ms);
 }
 
 static int begin_motion(struct robot_controller *controller, enum robot_state state,
@@ -290,7 +397,7 @@ static bool endpoint_ok(struct robot_controller *controller, bool check_gripper)
 	return true;
 }
 
-static void advance_motion(struct robot_controller *controller)
+static void advance_motion(struct robot_controller *controller, int64_t now_ms)
 {
 	const enum robot_state completed = controller->state;
 	const bool check_gripper =
@@ -359,7 +466,10 @@ static void advance_motion(struct robot_controller *controller)
 			if (controller->state == ROBOT_STATE_FAULT) {
 				return;
 			}
-			set_state(controller, ROBOT_STATE_TEST_COMPLETE);
+            controller->ci_checks = ROBOT_CONTROL_CHECK_CYCLE |
+                ROBOT_CONTROL_CHECK_ARM_ENDPOINT | ROBOT_CONTROL_CHECK_STOP_COMMAND;
+            set_state(controller, ROBOT_STATE_CI_WHEELS);
+            wheel_stage_begin(controller, 0U, now_ms);
 		} else {
 			set_state(controller, ROBOT_STATE_SEARCH_BALL);
 		}
@@ -449,6 +559,7 @@ int robot_controller_apply_config(
 	memcpy(&controller->config, config, sizeof(controller->config));
 	controller->robot_ci_mode = false;
 	controller->completed_cycles = 0;
+	controller->ci_checks = 0;
 	controller->fault_code = 0;
 	controller->wheel_command_valid = false;
 	controller->state = ROBOT_STATE_STARTUP_HOME;
@@ -489,11 +600,14 @@ void robot_controller_arm_tick(struct robot_controller *controller,
 	if (controller->motion.active) {
 		const int result = motion_tick(controller, now_ms);
 		if (result > 0) {
-			advance_motion(controller);
+			advance_motion(controller, now_ms);
 		}
 		return;
 	}
 	switch (controller->state) {
+	case ROBOT_STATE_CI_WHEELS:
+		wheel_feedback_tick(controller, now_ms);
+		break;
 	case ROBOT_STATE_PICK_VERIFY:
 		verify_pick(controller);
 		break;
@@ -517,7 +631,10 @@ bool robot_controller_input_timeout(struct robot_controller *controller,
 
 	controller->have_input = false;
 	controller->stable_frames = 0U;
-	command_wheels(controller, 0, 0, "PERCEPTION_INPUT_WATCHDOG");
+    command_wheels(controller, 0, 0, "PERCEPTION_INPUT_WATCHDOG");
+    if (controller->robot_ci_mode && controller->state != ROBOT_STATE_TEST_COMPLETE) {
+        fault(controller, "ci-input-timeout", -ETIMEDOUT);
+    }
 	printk("ZEPHYR_INPUT_WATCHDOG state=%s elapsed_ms=%lld timeout_ms=%u\n",
 	       state_name(controller->state), now_ms - controller->last_input_ms,
 	       ROBOT_INPUT_TIMEOUT_MS);
@@ -553,10 +670,11 @@ void robot_controller_control_result(
 		response->status = ROBOT_CONTROL_STATUS_FAILED;
 	} else if (controller->robot_ci_mode && controller->state == ROBOT_STATE_TEST_COMPLETE &&
 		   controller->completed_cycles > 0 && !controller->motion.active &&
+		   controller->ci_checks == ROBOT_CONTROL_CHECKS_REQUIRED &&
 		   controller->wheel_command_valid && controller->last_left == 0 &&
 		   controller->last_right == 0) {
 		response->status = ROBOT_CONFIG_STATUS_OK;
-		result.checks = ROBOT_CONTROL_CHECKS_REQUIRED;
+		result.checks = controller->ci_checks;
 	} else {
 		response->status = ROBOT_CONTROL_STATUS_PENDING;
 	}

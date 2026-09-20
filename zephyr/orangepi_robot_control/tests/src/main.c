@@ -19,6 +19,40 @@ static int16_t last_left;
 static int16_t last_right;
 static uint16_t last_arm_pose[FEETECH_ARM_COUNT];
 static bool fail_final_stop;
+static int wheel_fault;
+static int wheel_reads;
+static bool saw_wheel_motion;
+static uint16_t wheel_positions[3];
+
+int feetech_read_wheel_feedback(struct feetech_bus *bus, uint8_t index,
+                                int16_t *velocity, uint16_t *position)
+{
+    zassert_equal(bus, &fake_bus);
+    zassert_true(index < 3);
+    ++wheel_reads;
+    if (wheel_fault == 4) return -ETIMEDOUT;
+    *velocity = (last_right - last_left) * 10;
+    if (wheel_fault == 1 && index == 1) *velocity = 0;
+    if (wheel_fault == 2 && index == 2) *velocity = -*velocity;
+    if (wheel_fault == 3 && saw_wheel_motion && *velocity == 0) *velocity = 100;
+    /* Fault 7 reports speed while the encoder remains frozen. */
+    if (wheel_fault != 7) {
+        wheel_positions[index] = (wheel_positions[index] + *velocity / 10) & 0x0fff;
+    }
+    if (last_left == 0 && last_right == 0) {
+        if (wheel_fault == 5) {
+            /* Stationary one-count quantization with signed speed noise. */
+            *velocity = (wheel_reads & 1) ? 50 : -50;
+            wheel_positions[index] = 1000 + ((wheel_reads / 3) & 1);
+        } else if (wheel_fault == 6) {
+            /* One count per sample still accumulates into real creeping. */
+            *velocity = 0;
+            wheel_positions[index] = (wheel_positions[index] + 1) & 0x0fff;
+        }
+    }
+    *position = wheel_positions[index];
+    return 0;
+}
 
 static struct robot_runtime_config_v1 test_runtime_config(void)
 {
@@ -65,6 +99,7 @@ int feetech_send_diff_drive(struct feetech_bus *bus, int16_t left,
 	++wheel_commands;
 	last_left = left;
 	last_right = right;
+	saw_wheel_motion |= left != 0 || right != 0;
 	if (fail_final_stop && strcmp(label, "ROBOT_CI_COMPLETE_STOP") == 0) {
 		return -EIO;
 	}
@@ -98,6 +133,11 @@ int feetech_read_arm(struct feetech_bus *bus,
 static void reset_fakes(void)
 {
 	wheel_commands = 0;
+	wheel_fault = 0;
+    for (int i = 0; i < 3; ++i) wheel_positions[i] = 1000;
+    wheel_positions[0] = 4036; /* Exercise encoder wrap during forward motion. */
+	wheel_reads = 0;
+	saw_wheel_motion = false;
 	arm_commands = 0;
 	fail_final_stop = false;
 	last_left = 0;
@@ -119,6 +159,78 @@ static struct perception_result_v2 visible_ball(uint16_t center_x,
 		.box_width = box_size,
 		.box_height = box_size,
 	};
+}
+
+static void finish_wheel_checks(struct robot_controller *controller)
+{
+    for (int64_t now = 150; now <= 12000 && controller->state == ROBOT_STATE_CI_WHEELS;
+         now += 50) {
+        int before = wheel_reads;
+        robot_controller_arm_tick(controller, now);
+        zassert_true(wheel_reads - before <= 1, "multiple UART reads in one tick");
+    }
+}
+
+ZTEST(robot_control, test_wheels_require_all_feedback_and_final_stop)
+{
+    for (int failure = 0; failure <= 7; ++failure) {
+        struct robot_controller controller = {
+            .bus = &fake_bus, .state = ROBOT_STATE_PLACE_CLOSE,
+            .robot_ci_mode = true,
+            .motion = {.active = true, .duration_ms = 100U},
+        };
+        reset_fakes();
+        wheel_fault = failure;
+        controller.config = test_runtime_config();
+        robot_controller_arm_tick(&controller, 100);
+        finish_wheel_checks(&controller);
+        const bool should_pass = failure == 0 || failure == 5;
+        zexpect_equal(controller.state, should_pass ? ROBOT_STATE_TEST_COMPLETE : ROBOT_STATE_FAULT,
+                      "feedback scenario %d", failure);
+        zassert_equal(last_left, 0);
+        zassert_equal(last_right, 0);
+        if (should_pass) zexpect_equal(controller.ci_checks, ROBOT_CONTROL_CHECKS_REQUIRED);
+        else {
+            zexpect_not_equal(controller.ci_checks, ROBOT_CONTROL_CHECKS_REQUIRED);
+            int saved_error = controller.fault_code;
+            wheel_fault = 0;
+            robot_controller_arm_tick(&controller, 15000);
+            zassert_equal(controller.fault_code, saved_error);
+            zexpect_equal(controller.state, ROBOT_STATE_FAULT);
+        }
+    }
+}
+
+ZTEST(robot_control, test_ci_watchdog_failure_is_sticky)
+{
+    struct robot_controller controller = {
+        .bus = &fake_bus, .state = ROBOT_STATE_CI_WHEELS,
+        .robot_ci_mode = true, .have_input = true, .last_input_ms = 100,
+    };
+    reset_fakes();
+    controller.config = test_runtime_config();
+    zassert_true(robot_controller_input_timeout(&controller, 450));
+    struct perception_result_v2 result = visible_ball(100, 50);
+    robot_controller_process_perception(&controller, &result, 451);
+    robot_controller_arm_tick(&controller, 500);
+    zassert_equal(controller.state, ROBOT_STATE_FAULT);
+    zassert_equal(controller.fault_code, -ETIMEDOUT);
+    zassert_equal(last_left, 0);
+    zassert_equal(last_right, 0);
+}
+
+ZTEST(robot_control, test_command_only_completion_is_not_hardware_acceptance)
+{
+    struct robot_controller controller = {
+        .bus = &fake_bus, .state = ROBOT_STATE_PLACE_CLOSE,
+        .robot_ci_mode = true,
+        .motion = {.active = true, .duration_ms = 100U},
+    };
+    reset_fakes();
+    controller.config = test_runtime_config();
+    robot_controller_arm_tick(&controller, 100);
+    zassert_not_equal(controller.state, ROBOT_STATE_TEST_COMPLETE,
+                     "stop writes alone cannot prove wheel feedback");
 }
 
 ZTEST(robot_control, test_failed_final_stop_cannot_publish_test_complete)
@@ -154,6 +266,7 @@ ZTEST(robot_control, test_control_result_is_session_bound_idempotent_and_resetta
 	robot_controller_control_result(&controller, 17, 123, &request, &first);
 	zassert_equal(first.status, ROBOT_CONTROL_STATUS_PENDING);
 	robot_controller_arm_tick(&controller, 100);
+	finish_wheel_checks(&controller);
 	robot_controller_control_result(&controller, 17, 123, &request, &first);
 	zassert_equal(first.status, ROBOT_CONFIG_STATUS_OK);
 	int commands_before = wheel_commands + arm_commands;

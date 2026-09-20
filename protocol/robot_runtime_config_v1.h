@@ -55,10 +55,14 @@ enum robot_config_status {
 #define ROBOT_CONTROL_CHECK_CYCLE 1U
 #define ROBOT_CONTROL_CHECK_ARM_ENDPOINT 2U
 #define ROBOT_CONTROL_CHECK_STOP_COMMAND 4U
-#define ROBOT_CONTROL_CHECKS_REQUIRED 7U
+#define ROBOT_CONTROL_CHECK_WHEEL_DIRECTIONS 8U
+#define ROBOT_CONTROL_CHECK_WHEEL_STOP 16U
+#define ROBOT_CONTROL_CHECKS_REQUIRED 31U
 
 /* CONTROL_RESULT payload; all fields are little-endian on supported peers.
- * A stop-command success is not a measured wheel velocity or grasp verdict.
+ * Each bit records a completed check in this configuration session.
+ * Legacy peers reporting only bits 0..2 cannot satisfy the CI contract.
+ * Wheel feedback does not certify ground travel or a successful grasp.
  */
 struct robot_control_result_v1 {
 	uint32_t completed_cycles;

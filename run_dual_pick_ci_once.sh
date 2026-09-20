@@ -44,7 +44,7 @@ function numeric(value) { return value ~ /^[0-9]+([.][0-9]+)?$/ }
     cycles = field("cycles")
     if (!configured || control || done || field("session") != session ||
         field("status") != "ok" || !numeric(cycles) || cycles + 0 < 1 ||
-        field("checks") != "7") invalid = 1
+        field("checks") != "31") invalid = 1
     control = 1
 }
 /^STARRY_ROBOT_CI_PERF_WINDOW / {
@@ -63,14 +63,23 @@ function numeric(value) { return value ~ /^[0-9]+([.][0-9]+)?$/ }
         !numeric(duration) || duration + 0 < 62000) invalid = 1
     done = 1
 }
+/^DUAL_PICK_APPLICATION_PASS / {
+    if (application++ || !done || exited || field("session") != session ||
+        field("checks") != "31" || field("perf_windows") != "2" ||
+        field("cleanup") != "1" || field("ivc_dropped") != "0" ||
+        !numeric(field("min_fps")) || field("min_fps") + 0 != minimum + 0 ||
+        !numeric(field("duration_ms")) || field("duration_ms") + 0 < 62000) invalid = 1
+}
+/^DUAL_PICK_APPLICATION_FAIL / { invalid = 1 }
 /^DUAL_PICK_PROCESS_EXIT status=/ {
+    if (exited) invalid = 1
     status = field("status")
     exited = numeric(status)
 }
 END {
     if (!exited) exit 1
     if (status + 0 != 0) exit status + 0
-    if (invalid || windows != 2 || !done || !configured || !control) {
+    if (invalid || application != 1 || windows != 2 || !done || !configured || !control) {
         print "DUAL_PICK_CI_CHECK_FAILED reason=publisher-result-incomplete-or-invalid"
         exit 1
     }

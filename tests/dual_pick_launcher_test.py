@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class DualPickLauncherTests(unittest.TestCase):
     def launch(self, linux, ci=True, status=0, args=(), complete=True,
                fps='30', reported_threshold=None, windows=2, duration='62000', perf='pass',
-               control=True, control_session='17', control_status='ok'):
+               control=True, control_session='17', control_status='ok', final=True, checks='31', cleanup='1',
+               final_session='17', final_count=1, drops='0', after_final=''):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name in ('bin', 'models', 'config'):
@@ -40,8 +41,13 @@ class DualPickLauncherTests(unittest.TestCase):
             if complete:
                 if control:
                     log += (f'echo "ROBOT_CONTROL_DONE session={control_session} '
-                            f'status={control_status} cycles=1 checks=7"\n')
+                            f'status={control_status} cycles=1 checks={checks}"\n')
                 log += f'echo "STARRY_ROBOT_CI_DONE perf={perf} duration_ms={duration}"\n'
+            if final:
+                for _ in range(final_count):
+                    log += (f'echo "DUAL_PICK_APPLICATION_PASS session={final_session} checks={checks} perf_windows=2 '
+                            f'min_fps={threshold} duration_ms={duration} cleanup={cleanup} ivc_dropped={drops}"\n')
+            log += after_final
             executable.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n' + log +
                                   f'exit {status}\n')
             executable.chmod(0o755)
@@ -62,6 +68,19 @@ class DualPickLauncherTests(unittest.TestCase):
                     self.assertNotIn('ZEPHYR_', result.stdout)
                     self.assertIn('--robot-ci-once\n--min-fps\n' + threshold + '\n',
                                   result.stdout)
+
+    def test_intermediate_completion_without_application_verdict_is_rejected(self):
+        result = self.launch(False, args=('--min-fps', '19'), final=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_final_verdict_requires_cleanup_current_session_and_new_feedback(self):
+        for case in ({'checks': '7'}, {'cleanup': '0'}, {'drops': '1'},
+                     {'final_session': '16'}, {'final_count': 2},
+                     {'after_final': 'echo "DUAL_PICK_APPLICATION_FAIL reason=late-error"\n'}):
+            with self.subTest(case=case):
+                result = self.launch(False, args=('--min-fps', '19'), **case)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertNotIn('DUAL_PICK_CI_CHECK_PASS', result.stdout)
 
     def test_ci_requires_a_finite_positive_explicit_gate(self):
         for args in ((), ('--min-fps',), ('--wrong', '28'), ('--min-fps', 'NaN'),

@@ -27,7 +27,9 @@ private:
     void join(int first, int second);
 
     std::vector<uint8_t> mask_;
-    std::vector<int> labels_;
+    struct Run { int first; int last; int label; };
+    std::vector<Run> previous_runs_;
+    std::vector<Run> current_runs_;
     std::vector<int> parents_;
     std::vector<int> minimum_x_;
     std::vector<int> minimum_y_;

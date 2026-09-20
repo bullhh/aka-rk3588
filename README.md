@@ -71,7 +71,7 @@ result.jpg
 
 ## AxVisor 双客户机完整捡球
 
-在 StarryOS+Zephyr 双客户机场景中，StarryOS 只运行摄像头和 RKNN 感知，Zephyr 通过
+在 Linux/StarryOS+Zephyr 双客户机场景中，Linux/StarryOS 运行摄像头和 RKNN 感知，Zephyr 通过
 IVC 接收结果并独占 UART6、底盘和机械臂。必须先用配套 TGOSKits 配置启动两台客户机，
 再从已安装的双客户机运行包根目录执行：
 
@@ -100,21 +100,22 @@ Linux+Zephyr 与 StarryOS+Zephyr 使用同一个感知程序和同一个启动�
 `config/lekiwi_pick_config.txt`，把校准后的机械臂姿态和控制参数分成 9 条消息发送到
 同一个 `robot-ivc`。Zephyr 每收到一条即反向确认，全部校验并原子应用后才启动 HOME
 和视觉控制。成功标志为 `ROBOT_CONFIG_APPLIED` 与 `AXIVC_BIDIRECTIONAL_PASS`。感知
-程序退出后，Zephyr 会安全停车并重新等待下一次 publisher，因此无需重启客户机即可
-再次执行同一个入口。
+程序退出后，Zephyr 的输入看门狗会发出底盘停止命令；在允许重新配置的状态下，控制端
+可重新等待 publisher。FAULT 状态不提供通用自动恢复，具体边界见下述控制流程文档。
 
 该脚本使用真实摄像头和 RKNN 测量两个 10 秒性能窗口。tgoskits 的各自 board TOML
-通过命令参数传入门槛：Linux+Zephyr 为 28 FPS，StarryOS+Zephyr 为 19 FPS；
-手工测试 StarryOS 时将上例参数改为 `--min-fps 19`。
+通过命令参数传入门槛：Linux+Zephyr 和 StarryOS+Zephyr 均为 28 FPS。
 CI 脚本只检查感知客户机的两个 `STARRY_ROBOT_CI_PERF_WINDOW`、同配置会话的
-`ROBOT_CONTROL_DONE ... status=ok cycles=1 checks=7`、
-`STARRY_ROBOT_CI_DONE perf=pass`（至少 62000 ms）和进程退出码，不依赖 Zephyr 端日志。
+`ROBOT_CONTROL_DONE ... status=ok cycles=1 checks=31`、
+`STARRY_ROBOT_CI_DONE perf=pass`（至少 62000 ms）、清理后的唯一
+`DUAL_PICK_APPLICATION_PASS` 和进程退出码，不依赖 Zephyr 端日志。
 感知程序在发送 62 秒场景后，通过原 IVC 查询 Zephyr 的控制结果，最多等待 10 秒；
-只有动作周期结束、机械臂终点反馈通过、停车命令成功且无故障才确认完成。
+只有动作周期结束、机械臂终点反馈、三轮双向速度及最终停车反馈通过且无故障才确认完成。
 缺少确认、旧会话确认、控制失败、超时或非零退出均失败。BEGIN 启动握手最多等待
 90 秒，配置完成后才开始性能计时；普通运行仍为 `./run_dual_pick.sh`。
-该结果不证明真实夹球、车轮实测速度或看门狗实验。协议与回滚见
-[双客户机完成协议](docs/dual-ci-control-result.md)。
+CI 已包含真实轮子位置与速度反馈；它不证明真实夹球、地面行驶、识别准确率或硬件急停。
+普通运行与 CI 的区别、失败判据及验证边界统一见
+[双客户机控制流程与 CI 完成协议](docs/dual-ci-control-result.md)。
 
 运行时默认每累计 60 条结果应看到：
 
@@ -472,3 +473,45 @@ config/lekiwi_arm_poses.txt
 ./build/tennis test-motor /dev/ttyS3 speed=30
 ./build/tennis models/tennis.rknn /dev/ttyS3 0 /dev/ttyUSB1
 ```
+
+## 双客户机 CI 的最终验收
+
+这是 Linux/Starry + Zephyr 的实体板集成回归测试，目的是发现更新后“能够启动，但感知
+性能下降、IVC 协作异常或执行器动作未完成”的问题，覆盖单元测试无法验证的真实设备链路。
+
+流程为：配置握手 → 两个约 10 秒的真实感知性能窗口（均 ≥28 FPS）→ 预设球/桶场景
+驱动真实控制流程 → 机械臂终点及三轮正反转/停车反馈 → 查询完成结果 → 清理并退出。
+感知端与 Zephyr 通过同一双向 IVC 传递配置、48 字节检测结果和控制回复；Zephyr 独占 UART6。
+
+启动或握手失败、推理错误、IVC 发送失败或丢帧、帧率不足、执行器反馈异常、控制未完成、
+清理失败或非零退出都不能通过。进入 CI 控制模式后的输入断流会锁定本会话失败。
+少量采集/解码坏帧允许剔除并记录，连续失败达到 10 次退出；坏帧不计入推理 FPS。
+只有匹配 session、配置 CRC 和 `checks=31` 的控制结果、清理后的唯一
+`DUAL_PICK_APPLICATION_PASS`、脚本零退出及 board 入口 `sync` 全部成立，才输出最终 PASS。
+
+CI 全程继续真实采集和推理，但约第 20 秒起向控制端发送预设场景，并允许模拟夹持成功。
+它验证感知性能、通信与受控执行器反馈，不证明识别准确率、真实抓球入桶、地面行驶或
+长期/硬实时安全。具体状态机、反馈条件、失败处理及回滚见
+[双客户机控制流程与 CI 完成协议](docs/dual-ci-control-result.md)。
+
+部署前备份程序、Zephyr 镜像和登录配置，保留本板 `config/` 标定文件。宿主测试覆盖失败路径，
+Zephyr native_sim 验证控制状态与反馈故障；Linux+Zephyr 和 Starry+Zephyr 实板运行分别验收。
+这些验收证明真实推理、舵机反馈与受控运动，不证明地面行驶或真实抓球成功。
+
+构建感知程序时须匹配客户机的 libc ABI。板上已有依赖时可用
+`cmake -S . -B build-native -DNATIVE_BUILD=ON -DCMAKE_BUILD_TYPE=Release`，然后
+`cmake --build build-native --target tennis-perception`。交叉构建必须使用兼容客户机的
+sysroot；较新主机 libc 头文件可能引入 `GLIBC_2.38` 符号，不能仅凭交叉链接成功部署。
+
+
+性能诊断可直接为 `tennis-perception` 添加 `--profile-pipeline`，按现有状态窗口输出
+`STARRY_PIPELINE_TIMING`，区分采集、解码、NPU 各阶段、红桶检测和 IVC 耗时；默认关闭。
+MJPEG 解码器在帧间复用，尺寸匹配时直接解码到模型输入缓冲区。红桶检测保留原 HSV
+阈值、四连通区域、面积和同面积选择规则，使用等价整数判断、AArch64 NEON 和按行连续
+区段合并，减少全帧中间数组扫描。相机分辨率、NPU 模型及逐帧检测频率保持原配置。
+
+停车反馈采用位置与速度联合判定：四组采样中位置总跨度不超过一个 12 位编码器刻度，
+同时速度反馈限制在 ±50 step/s 的实测量化抖动内。该窗口检查总位移，不能靠每次小幅移动
+累积爬行通过。正反转要求速度方向正确且连续位置增量方向一致，每段至少两个刻度；
+编码器回绕按 4096 刻度处理。每次读取同一轮的位置和速度，每阶段仍限时 2 秒，
+350 ms 输入看门狗、错误保持和其他 CI 门槛保持不变。

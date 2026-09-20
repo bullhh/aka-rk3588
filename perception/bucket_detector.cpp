@@ -1,33 +1,53 @@
 #include "bucket_detector.hpp"
 
 #include <algorithm>
+#include <cstring>
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 namespace perception {
 namespace {
 
 bool is_red(uint8_t red, uint8_t green, uint8_t blue) {
-    const int maximum = std::max({static_cast<int>(red), static_cast<int>(green),
-                                  static_cast<int>(blue)});
-    const int minimum = std::min({static_cast<int>(red), static_cast<int>(green),
-                                  static_cast<int>(blue)});
-    const int delta = maximum - minimum;
-    const int saturation = maximum == 0 ? 0 : delta * 255 / maximum;
-    if (saturation < 80 || maximum < 50) return false;
-    if (delta == 0) return true;
+    // The accepted hue interval is centered on red. Other dominant channels
+    // cannot qualify, so avoid their HSV divisions entirely.
+    if (red < 50 || red < green || red < blue) return false;
+    const int delta = red - std::min(green, blue);
+    // floor(delta * 255 / red) >= 80, without an integer division.
+    if (delta * 255 < 80 * red) return false;
+    const int difference = static_cast<int>(green) - static_cast<int>(blue);
+    return 3 * (difference < 0 ? -difference : difference) <= delta;
+}
 
-    float hue;
-    if (maximum == red) {
-        hue = 60.0f * ((static_cast<int>(green) - static_cast<int>(blue)) /
-                       static_cast<float>(delta));
-    } else if (maximum == green) {
-        hue = 60.0f * ((static_cast<int>(blue) - static_cast<int>(red)) /
-                       static_cast<float>(delta) + 2.0f);
-    } else {
-        hue = 60.0f * ((static_cast<int>(red) - static_cast<int>(green)) /
-                       static_cast<float>(delta) + 4.0f);
+void classify_red(const uint8_t* rgb, uint8_t* mask, size_t pixels) {
+    size_t index = 0;
+#if defined(__aarch64__)
+    for (; index + 16 <= pixels; index += 16) {
+        const uint8x16x3_t channels = vld3q_u8(rgb + index * 3);
+        const uint8x16_t red = channels.val[0];
+        const uint8x16_t green = channels.val[1];
+        const uint8x16_t blue = channels.val[2];
+        uint8x16_t valid = vandq_u8(vcgeq_u8(red, vmaxq_u8(green, blue)),
+                                   vcgeq_u8(red, vdupq_n_u8(50)));
+        const uint8x16_t delta = vsubq_u8(red, vminq_u8(green, blue));
+        const uint8x16_t difference = vabdq_u8(green, blue);
+        const auto classify_half = [](uint8x8_t r, uint8x8_t d, uint8x8_t diff) {
+            const uint16x8_t saturated = vcgeq_u16(vmull_u8(d, vdup_n_u8(255)),
+                                                   vmull_u8(r, vdup_n_u8(80)));
+            const uint16x8_t hue = vcleq_u16(vmull_u8(diff, vdup_n_u8(3)), vmovl_u8(d));
+            return vmovn_u16(vandq_u16(saturated, hue));
+        };
+        valid = vandq_u8(valid, vcombine_u8(
+            classify_half(vget_low_u8(red), vget_low_u8(delta), vget_low_u8(difference)),
+            classify_half(vget_high_u8(red), vget_high_u8(delta), vget_high_u8(difference))));
+        vst1q_u8(mask + index, valid);
     }
-    if (hue < 0.0f) hue += 360.0f;
-    return hue <= 20.0f || hue >= 340.0f;
+#endif
+    for (; index < pixels; ++index) {
+        mask[index] = is_red(rgb[index * 3], rgb[index * 3 + 1], rgb[index * 3 + 2]);
+    }
 }
 
 } // namespace
@@ -43,7 +63,14 @@ int BucketDetector::find_root(int label) {
 void BucketDetector::join(int first, int second) {
     first = find_root(first);
     second = find_root(second);
-    if (first != second) parents_[first] = second;
+    if (first == second) return;
+    parents_[first] = second;
+    areas_[second] += areas_[first];
+    areas_[first] = 0;
+    minimum_x_[second] = std::min(minimum_x_[second], minimum_x_[first]);
+    minimum_y_[second] = std::min(minimum_y_[second], minimum_y_[first]);
+    maximum_x_[second] = std::max(maximum_x_[second], maximum_x_[first]);
+    maximum_y_[second] = std::max(maximum_y_[second], maximum_y_[first]);
 }
 
 BucketDetection BucketDetector::detect(const uint8_t* rgb, int width, int height,
@@ -51,55 +78,70 @@ BucketDetection BucketDetector::detect(const uint8_t* rgb, int width, int height
     BucketDetection result;
     if (rgb == nullptr || width <= 0 || height <= 0) return result;
 
-    const size_t pixels = static_cast<size_t>(width) * height;
-    mask_.assign(pixels, 0);
-    labels_.assign(pixels, 0);
-    for (size_t pixel = 0; pixel < pixels; ++pixel) {
-        mask_[pixel] = is_red(rgb[pixel * 3], rgb[pixel * 3 + 1],
-                              rgb[pixel * 3 + 2]) ? 1U : 0U;
-    }
-
+    mask_.resize(static_cast<size_t>(width));
     parents_.clear();
-    parents_.push_back(0);
-    int next_label = 1;
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            const int index = y * width + x;
-            if (mask_[index] == 0U) continue;
-            const int above = y > 0 ? labels_[(y - 1) * width + x] : 0;
-            const int left = x > 0 ? labels_[y * width + x - 1] : 0;
-            if (above == 0 && left == 0) {
-                labels_[index] = next_label;
-                parents_.push_back(next_label++);
-            } else if (above == 0) {
-                labels_[index] = left;
-            } else if (left == 0) {
-                labels_[index] = above;
-            } else {
-                labels_[index] = left;
-                join(above, left);
-            }
-        }
-    }
+    minimum_x_.clear();
+    minimum_y_.clear();
+    maximum_x_.clear();
+    maximum_y_.clear();
+    areas_.clear();
+    previous_runs_.clear();
+    current_runs_.clear();
+    const auto new_label = [&]() {
+        const int label = static_cast<int>(parents_.size());
+        parents_.push_back(label);
+        minimum_x_.push_back(width);
+        minimum_y_.push_back(height);
+        maximum_x_.push_back(-1);
+        maximum_y_.push_back(-1);
+        areas_.push_back(0);
+        return label;
+    };
+    new_label(); // Background label.
 
-    minimum_x_.assign(next_label, width);
-    minimum_y_.assign(next_label, height);
-    maximum_x_.assign(next_label, -1);
-    maximum_y_.assign(next_label, -1);
-    areas_.assign(next_label, 0);
+    // A horizontal run has the same label at every pixel in the original
+    // four-connected scan. Merge only intersecting runs from the preceding row.
+    // Preserve above -> left union order, including equal-area tie behavior.
     for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            const int index = y * width + x;
-            if (labels_[index] == 0) continue;
-            const int root = find_root(labels_[index]);
-            labels_[index] = root;
-            ++areas_[root];
-            minimum_x_[root] = std::min(minimum_x_[root], x);
+        current_runs_.clear();
+        size_t previous = 0;
+        // Consume one row while its RGB data and mask are still cache-hot.
+        classify_red(rgb + static_cast<size_t>(y) * width * 3, mask_.data(), width);
+        const uint8_t* row = mask_.data();
+        int x = 0;
+        while (x < width) {
+            while (x < width && row[x] == 0) {
+                if (x + 8 <= width) {
+                    uint64_t word;
+                    std::memcpy(&word, row + x, sizeof(word));
+                    if (word == 0) { x += 8; continue; }
+                }
+                ++x;
+            }
+            if (x == width) break;
+            const int first = x;
+            while (x < width && row[x] != 0) ++x;
+            const int last = x - 1;
+            while (previous < previous_runs_.size() && previous_runs_[previous].last < first)
+                ++previous;
+            const int label = previous < previous_runs_.size() &&
+                              previous_runs_[previous].first <= first
+                                ? previous_runs_[previous].label : new_label();
+            for (size_t i = previous; i < previous_runs_.size() &&
+                                     previous_runs_[i].first <= last; ++i) {
+                join(previous_runs_[i].label, label);
+            }
+            const int root = find_root(label);
+            areas_[root] += last - first + 1;
+            minimum_x_[root] = std::min(minimum_x_[root], first);
             minimum_y_[root] = std::min(minimum_y_[root], y);
-            maximum_x_[root] = std::max(maximum_x_[root], x);
+            maximum_x_[root] = std::max(maximum_x_[root], last);
             maximum_y_[root] = std::max(maximum_y_[root], y);
+            current_runs_.push_back({first, last, label});
         }
+        previous_runs_.swap(current_runs_);
     }
+    const int next_label = static_cast<int>(parents_.size());
 
     int best = 0;
     for (int label = 1; label < next_label; ++label) {

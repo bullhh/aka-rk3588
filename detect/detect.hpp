@@ -27,8 +27,8 @@ typedef struct {
 // Load RKNN model.  Returns 0 on success.
 int detect_init(const char* model_path, rknn_app_context_t* ctx);
 
-// Release model resources.
-void detect_deinit(rknn_app_context_t* ctx);
+// Release model resources; return zero on success or the runtime error.
+int detect_deinit(rknn_app_context_t* ctx);
 
 // ── Inference ─────────────────────────────────────────────────────────────────
 
@@ -37,7 +37,7 @@ void detect_deinit(rknn_app_context_t* ctx);
 //   used to map bbox coords back to original camera frame (orig_w × orig_h).
 // Timing outputs (optional, pass nullptr to skip):
 // t_input, t_run, t_output, t_post, t_release
-// Returns number of detections.
+// Returns number of detections (zero is valid), or -1 on inference/release failure.
 int detect_run(rknn_app_context_t* ctx,
                const uint8_t* rgb_data, int model_w, int model_h,
                int orig_w, int orig_h,

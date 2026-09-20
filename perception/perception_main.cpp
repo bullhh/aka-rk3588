@@ -94,6 +94,14 @@ public:
     IvcPublisher(const IvcPublisher&) = delete;
     IvcPublisher& operator=(const IvcPublisher&) = delete;
 
+    int close() {
+        auto* channel = channel_;
+        channel_ = nullptr;
+        return channel ? axivc_close(channel) : 0;
+    }
+
+    uint32_t session_id() const { return session_id_; }
+
     bool open_channel(uint64_t key, size_t channel_size) {
         int attempts = 0;
         int last_error = 0;
@@ -329,6 +337,12 @@ uint64_t monotonic_ms() {
            static_cast<uint64_t>(now.tv_nsec) / 1000000ULL;
 }
 
+uint64_t monotonic_us() {
+    timespec now{};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return static_cast<uint64_t>(now.tv_sec) * 1000000ULL + now.tv_nsec / 1000ULL;
+}
+
 bool parse_nonnegative(const char* value, int& output) {
     errno = 0;
     char* end = nullptr;
@@ -364,7 +378,7 @@ void usage(const char* program) {
     std::fprintf(
         stderr,
         "Usage: %s <model.rknn> [uvc-index] [--max-results N] [--report-every N]\n"
-        "       [--status-every N] [--pipeline-heartbeat 0|1]\n"
+        "       [--status-every N] [--pipeline-heartbeat 0|1] [--profile-pipeline]\n"
         "       [--transport stdout|ivc] [--ivc-key KEY] [--ivc-size BYTES]\n"
         "       [--calibration FILE] [--pick-config FILE]\n"
         "       [--robot-ci-once] [--min-fps N]\n"
@@ -383,7 +397,23 @@ void usage(const char* program) {
         program);
 }
 
-int decode_mjpeg(const uint8_t* jpeg,
+class JpegDecoder {
+public:
+    JpegDecoder() : handle_(tjInitDecompress()) {}
+    ~JpegDecoder() { close(); }
+    JpegDecoder(const JpegDecoder&) = delete;
+    JpegDecoder& operator=(const JpegDecoder&) = delete;
+    tjhandle get() const { return handle_; }
+    int close() {
+        tjhandle handle = handle_;
+        handle_ = nullptr;
+        return handle ? tjDestroy(handle) : 0;
+    }
+private:
+    tjhandle handle_;
+};
+
+int decode_mjpeg(JpegDecoder& context, const uint8_t* jpeg,
                  size_t jpeg_length,
                  uint8_t* output,
                  int output_width,
@@ -391,7 +421,7 @@ int decode_mjpeg(const uint8_t* jpeg,
                  int& pad_x,
                  int& pad_y,
                  float& scale) {
-    tjhandle decoder = tjInitDecompress();
+    tjhandle decoder = context.get();
     if (decoder == nullptr) return -1;
 
     int source_width = 0;
@@ -405,7 +435,6 @@ int decode_mjpeg(const uint8_t* jpeg,
                             &source_height,
                             &subsampling,
                             &colorspace) < 0) {
-        tjDestroy(decoder);
         return -1;
     }
 
@@ -416,18 +445,26 @@ int decode_mjpeg(const uint8_t* jpeg,
     pad_x = (output_width - scaled_width) / 2;
     pad_y = (output_height - scaled_height) / 2;
 
-    std::vector<uint8_t> scaled(static_cast<size_t>(scaled_width) * scaled_height * 3);
+    // A matching camera/model scale needs neither a temporary RGB allocation
+    // nor a full-frame copy. TurboJPEG's pitch writes directly into letterbox.
+    const bool direct = scaled_width == source_width && scaled_height == source_height;
+    if (direct && (pad_x != 0 || pad_y != 0)) {
+        std::memset(output, 114, static_cast<size_t>(output_width) * output_height * 3);
+    }
+    std::vector<uint8_t> scaled(direct ? 0 : static_cast<size_t>(scaled_width) * scaled_height * 3);
+    uint8_t* decoded = direct ? output + (static_cast<size_t>(pad_y) * output_width + pad_x) * 3
+                              : scaled.data();
     const int result = tjDecompress2(decoder,
                                      jpeg,
                                      jpeg_length,
-                                     scaled.data(),
+                                     decoded,
                                      scaled_width,
-                                     0,
+                                     direct ? output_width * 3 : 0,
                                      scaled_height,
                                      TJPF_RGB,
                                      TJFLAG_FASTDCT);
-    tjDestroy(decoder);
     if (result < 0) return -1;
+    if (direct) return 0;
 
     std::memset(output, 114, static_cast<size_t>(output_width) * output_height * 3);
     for (int row = 0; row < scaled_height; ++row) {
@@ -545,6 +582,7 @@ int main(int argc, char** argv) {
     int report_every = 1;
     int status_every = 60;
     int pipeline_heartbeat = 0;
+    bool profile_pipeline = false;
     bool robot_ci_once = false;
     double robot_ci_min_fps = 15.0;
     std::string transport = "stdout";
@@ -588,6 +626,9 @@ int main(int argc, char** argv) {
                 return 2;
             }
             argument += 2;
+        } else if (std::strcmp(argv[argument], "--profile-pipeline") == 0) {
+            profile_pipeline = true;
+            ++argument;
         } else if (std::strcmp(argv[argument], "--transport") == 0 && argument + 1 < argc) {
             transport = argv[argument + 1];
             if (transport != "stdout" && transport != "ivc") {
@@ -667,6 +708,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    JpegDecoder decoder;
+    if (decoder.get() == nullptr) {
+        LOGE("Failed to create JPEG decoder");
+        detect_deinit(&rknn_context);
+        return 1;
+    }
     std::unique_ptr<uint8_t[]> mjpeg(new uint8_t[kMjpegCapacity]);
     const size_t rgb_size = static_cast<size_t>(rknn_context.model_width) *
                             rknn_context.model_height * 3;
@@ -714,12 +761,16 @@ int main(int argc, char** argv) {
     uint64_t perf_window_started_inferences = 0;
     unsigned perf_windows = 0;
     bool robot_ci_perf_passed = !robot_ci_once;
+    bool robot_ci_complete = false;
+    uint64_t robot_ci_duration_ms = 0;
     std::string robot_ci_phase;
     uint64_t inference_sequence = 0;
     int emitted = 0;
     int ivc_sent = 0;
     int ivc_dropped = 0;
     int consecutive_failures = 0;
+    unsigned capture_failures = 0;
+    unsigned decode_failures = 0;
     bool transport_failed = false;
     uint64_t rate_window_started_ms = started_ms;
     uint64_t rate_window_started_inferences = 0;
@@ -728,6 +779,9 @@ int main(int argc, char** argv) {
     int rate_window_started_results = 0;
     perception::PerceptionResultV2 latest_result{};
     bool has_latest_result = false;
+    uint64_t timing[9]{};
+    uint64_t max_frame_us = 0;
+    uint64_t max_capture_us = 0;
     const auto maybe_report_status = [&](uint64_t now_ms) {
         if (status_every == 0 || !has_latest_result) return;
         const int window_results = emitted - rate_window_started_results;
@@ -752,6 +806,21 @@ int main(int argc, char** argv) {
                                  window_ivc_sent,
                                  window_ivc_dropped);
 
+        if (profile_pipeline) {
+            const double divisor = std::max<uint64_t>(window_inferences, 1) * 1000.0;
+            std::printf("STARRY_PIPELINE_TIMING frames=%llu capture_ms=%.3f copy_ms=%.3f "
+                        "decode_ms=%.3f input_ms=%.3f run_ms=%.3f output_ms=%.3f "
+                        "post_release_ms=%.3f bucket_ms=%.3f ivc_ms=%.3f "
+                        "max_frame_ms=%.3f max_capture_ms=%.3f\n",
+                        static_cast<unsigned long long>(window_inferences),
+                        timing[0]/divisor, timing[1]/divisor, timing[2]/divisor,
+                        timing[3]/divisor, timing[4]/divisor, timing[5]/divisor,
+                        timing[6]/divisor, timing[7]/divisor, timing[8]/divisor,
+                        max_frame_us/1000.0, max_capture_us/1000.0);
+            std::memset(timing, 0, sizeof(timing));
+            max_frame_us = max_capture_us = 0;
+        }
+        std::fflush(stdout);
         rate_window_started_ms = now_ms;
         rate_window_started_inferences = inference_sequence;
         rate_window_started_ivc_sent = ivc_sent;
@@ -761,11 +830,18 @@ int main(int argc, char** argv) {
     while (!g_stop.load() && (max_results == 0 || emitted < max_results)) {
         g_diag_attempt.fetch_add(1, std::memory_order_relaxed);
         g_diag_stage.store(DiagStage::Capture, std::memory_order_relaxed);
-        const int jpeg_length = capture.getFrame(mjpeg.get(), kMjpegCapacity, 1000);
+        const uint64_t frame_started_us = profile_pipeline ? monotonic_us() : 0;
+        long wait_us = 0, copy_us = 0;
+        const int jpeg_length = capture.getFrame(mjpeg.get(), kMjpegCapacity, 1000,
+                                                 &wait_us, &copy_us);
+        timing[0] += wait_us;
+        timing[1] += copy_us;
+        max_capture_us = std::max(max_capture_us, static_cast<uint64_t>(wait_us));
         g_diag_progress.fetch_add(1, std::memory_order_relaxed);
         if (jpeg_length <= 0) {
+            ++capture_failures;
             if (++consecutive_failures >= 10) {
-                LOGE("Camera produced no frame for 10 consecutive attempts");
+                LOGE("Camera capture failed");
                 break;
             }
             continue;
@@ -775,7 +851,8 @@ int main(int argc, char** argv) {
         int pad_y = 0;
         float scale = 1.0f;
         g_diag_stage.store(DiagStage::Decode, std::memory_order_relaxed);
-        if (decode_mjpeg(mjpeg.get(),
+        const uint64_t decode_started_us = profile_pipeline ? monotonic_us() : 0;
+        if (decode_mjpeg(decoder, mjpeg.get(),
                          static_cast<size_t>(jpeg_length),
                          rgb.get(),
                          rknn_context.model_width,
@@ -783,14 +860,17 @@ int main(int argc, char** argv) {
                          pad_x,
                          pad_y,
                          scale) != 0) {
+            ++decode_failures;
             if (++consecutive_failures >= 10) {
-                LOGE("MJPEG decode failed for 10 consecutive frames");
+                LOGE("MJPEG decode failed");
                 break;
             }
             continue;
         }
         g_diag_progress.fetch_add(1, std::memory_order_relaxed);
 
+        if (profile_pipeline) timing[2] += monotonic_us() - decode_started_us;
+        long input_us = 0, run_us = 0, output_us = 0, post_us = 0, release_us = 0;
         std::vector<detection> detections;
         g_diag_stage.store(DiagStage::Rknn, std::memory_order_relaxed);
         if (detect_run(&rknn_context,
@@ -804,14 +884,23 @@ int main(int argc, char** argv) {
                        scale,
                        0.5f,
                        0.45f,
-                       detections) < 0) {
-            if (++consecutive_failures >= 10) {
-                LOGE("RKNN inference failed for 10 consecutive frames");
+                       detections,
+                       profile_pipeline ? &input_us : nullptr,
+                       profile_pipeline ? &run_us : nullptr,
+                       profile_pipeline ? &output_us : nullptr,
+                       profile_pipeline ? &post_us : nullptr,
+                       profile_pipeline ? &release_us : nullptr) < 0) {
+            if (++consecutive_failures >= 10 || robot_ci_once) {
+                LOGE("RKNN inference failed");
                 break;
             }
             continue;
         }
         g_diag_progress.fetch_add(1, std::memory_order_relaxed);
+        timing[3] += input_us;
+        timing[4] += run_us;
+        timing[5] += output_us;
+        timing[6] += post_us + release_us;
         consecutive_failures = 0;
         ++inference_sequence;
         g_diag_inference.store(inference_sequence, std::memory_order_relaxed);
@@ -846,8 +935,10 @@ int main(int argc, char** argv) {
             continue;
         }
 
+        const uint64_t bucket_started_us = profile_pipeline ? monotonic_us() : 0;
         const perception::BucketDetection bucket = bucket_detector.detect(
             rgb.get(), rknn_context.model_width, rknn_context.model_height);
+        if (profile_pipeline) timing[7] += monotonic_us() - bucket_started_us;
         perception::PerceptionResultV2 result =
             make_result(inference_sequence, detections, bucket);
         latest_result = result;
@@ -868,7 +959,7 @@ int main(int argc, char** argv) {
         if (transport == "ivc") {
             g_diag_stage.store(DiagStage::Ivc, std::memory_order_relaxed);
             bool dropped = false;
-            const uint64_t ivc_started_ms = monotonic_ms();
+            const uint64_t ivc_started_us = monotonic_us();
             if (debug_trace) {
                 LOGD("STARRY_DIAG seq=%llu stage=ivc-send-enter sent=%d dropped=%d",
                      static_cast<unsigned long long>(result.sequence), ivc_sent,
@@ -879,9 +970,15 @@ int main(int argc, char** argv) {
                 transport_failed = true;
                 break;
             }
-            const uint64_t ivc_elapsed_ms = monotonic_ms() - ivc_started_ms;
+            const uint64_t ivc_elapsed_us = monotonic_us() - ivc_started_us;
+            timing[8] += ivc_elapsed_us;
+            const uint64_t ivc_elapsed_ms = ivc_elapsed_us / 1000;
             if (dropped) {
                 ++ivc_dropped;
+                if (robot_ci_once) {
+                    transport_failed = true;
+                    break;
+                }
                 LOGW("AxVisor IVC ring stayed full; dropped seq=%llu total=%d",
                      static_cast<unsigned long long>(result.sequence),
                      ivc_dropped);
@@ -900,6 +997,9 @@ int main(int argc, char** argv) {
         }
         g_diag_progress.fetch_add(1, std::memory_order_relaxed);
         g_diag_stage.store(DiagStage::Idle, std::memory_order_relaxed);
+        if (profile_pipeline) {
+            max_frame_us = std::max(max_frame_us, monotonic_us() - frame_started_us);
+        }
         ++emitted;
         maybe_report_status(monotonic_ms());
         if (robot_ci_once && elapsed_ms >= kRobotCiTotalMs) {
@@ -907,10 +1007,8 @@ int main(int argc, char** argv) {
                 transport_failed = true;
                 break;
             }
-            std::printf("STARRY_ROBOT_CI_DONE perf=%s duration_ms=%llu\n",
-                        robot_ci_perf_passed ? "pass" : "fail",
-                        static_cast<unsigned long long>(elapsed_ms));
-            std::fflush(stdout);
+            robot_ci_complete = true;
+            robot_ci_duration_ms = elapsed_ms;
             break;
         }
     }
@@ -918,14 +1016,35 @@ int main(int argc, char** argv) {
     g_diag_stop.store(true, std::memory_order_relaxed);
     if (diag_thread.joinable()) diag_thread.join();
     capture.close();
-    detect_deinit(&rknn_context);
+    const int jpeg_cleanup = decoder.close();
+    const int model_cleanup = detect_deinit(&rknn_context);
+    const int ivc_cleanup = ivc.close();
+    const bool failed = (robot_ci_once ? consecutive_failures != 0 : consecutive_failures >= 10) ||
+        transport_failed || jpeg_cleanup != 0 || model_cleanup != 0 || ivc_cleanup != 0 ||
+        (robot_ci_once && (g_stop.load() || !robot_ci_complete ||
+                          !robot_ci_perf_passed || ivc_dropped != 0));
+    if (failed) {
+        std::printf("DUAL_PICK_APPLICATION_FAIL session=%u complete=%u "
+                    "interrupted=%u jpeg_cleanup=%d model_cleanup=%d ivc_cleanup=%d dropped=%d\n",
+                    ivc.session_id(), robot_ci_complete, g_stop.load(),
+                    jpeg_cleanup, model_cleanup, ivc_cleanup, ivc_dropped);
+        return 1;
+    }
     std::printf("STARRY_PERCEPTION_OK results=%d inferences=%llu ivc_sent=%d ivc_dropped=%d\n",
-                emitted,
-                static_cast<unsigned long long>(inference_sequence),
-                ivc_sent,
-                ivc_dropped);
-    return consecutive_failures >= 10 || transport_failed ||
-                   (robot_ci_once && !robot_ci_perf_passed)
-               ? 1
-               : 0;
+                emitted, static_cast<unsigned long long>(inference_sequence),
+                ivc_sent, ivc_dropped);
+    if (std::fflush(stdout) != 0) return 1;
+    if (robot_ci_once) {
+        std::printf("STARRY_ROBOT_CI_DONE perf=pass duration_ms=%llu\n",
+                    static_cast<unsigned long long>(robot_ci_duration_ms));
+        if (std::fflush(stdout) != 0) return 1;
+        std::printf("DUAL_PICK_APPLICATION_PASS session=%u checks=%u perf_windows=%u "
+                    "min_fps=%.2f duration_ms=%llu cleanup=1 ivc_dropped=0 "
+                    "capture_dropped=%u decode_dropped=%u\n",
+                    ivc.session_id(), ROBOT_CONTROL_CHECKS_REQUIRED, perf_windows,
+                    robot_ci_min_fps, static_cast<unsigned long long>(robot_ci_duration_ms),
+                    capture_failures, decode_failures);
+        if (std::fflush(stdout) != 0) return 1;
+    }
+    return 0;
 }

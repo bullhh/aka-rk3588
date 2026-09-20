@@ -18,6 +18,9 @@ int feetech_bus_init(struct feetech_bus *bus, const struct device *uart);
 int feetech_configure_wheels(struct feetech_bus *bus);
 int feetech_configure_arm(struct feetech_bus *bus,
 			 uint16_t current[FEETECH_ARM_COUNT]);
+/* One bounded UART transaction; velocity uses the Feetech sign-magnitude format. */
+int feetech_read_wheel_feedback(struct feetech_bus *bus, uint8_t index,
+                                int16_t *velocity, uint16_t *position);
 int feetech_read_arm(struct feetech_bus *bus,
 		     uint16_t positions[FEETECH_ARM_COUNT],
 		     uint8_t *gripper_status);

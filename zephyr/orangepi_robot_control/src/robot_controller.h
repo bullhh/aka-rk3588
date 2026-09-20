@@ -31,6 +31,7 @@ enum robot_state {
 	ROBOT_STATE_PLACE_CLOSE,
 	ROBOT_STATE_RECOVER_OPEN,
 	ROBOT_STATE_RECOVER_HOME,
+	ROBOT_STATE_CI_WHEELS,
 	ROBOT_STATE_TEST_COMPLETE,
 	ROBOT_STATE_FAULT,
 };
@@ -52,6 +53,16 @@ struct robot_controller {
 	int64_t last_input_ms;
 	int64_t state_started_ms;
 	uint64_t completed_cycles;
+    uint32_t ci_checks;
+    int64_t wheel_deadline_ms;
+    uint8_t wheel_stage;
+    uint8_t wheel_index;
+    uint8_t wheel_groups;
+    uint8_t wheel_group;
+    uint16_t wheel_samples;
+    int16_t wheel_velocity[3];
+    uint16_t wheel_positions[4][3];
+    bool wheel_sample_matches;
 	uint32_t stable_frames;
 	int32_t fault_code;
 	int16_t last_left;

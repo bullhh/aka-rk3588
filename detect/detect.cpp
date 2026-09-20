@@ -53,9 +53,9 @@ int detect_init(const char* model_path, rknn_app_context_t* ctx)
     return 0;
 }
 
-void detect_deinit(rknn_app_context_t* ctx)
+int detect_deinit(rknn_app_context_t* ctx)
 {
-    release_yolov8_model(ctx);
+    return release_yolov8_model(ctx);
 }
 
 // ── Inference ─────────────────────────────────────────────────────────────────
@@ -74,13 +74,12 @@ int detect_run(rknn_app_context_t* ctx,
                long* t_input, long* t_run, long* t_output, long* t_post,
                long* t_release)
 {
-    struct timeval t_start, t_stage;
-    gettimeofday(&t_start, nullptr);
+    struct timeval t_stage{};
 
     dets.clear();
 
     // 1. Set input
-    gettimeofday(&t_stage, nullptr);
+    if (t_input) gettimeofday(&t_stage, nullptr);
     rknn_input inputs[1];
     memset(inputs, 0, sizeof(inputs));
     inputs[0].index  = 0;
@@ -91,29 +90,29 @@ int detect_run(rknn_app_context_t* ctx,
 
     int ret = rknn_inputs_set(ctx->rknn_ctx, 1, inputs);
     if (ret < 0) { fprintf(stderr, "[detect] rknn_inputs_set %d\n", ret); return -1; }
-    long t_input_us = elapsed_us(t_stage);
+    if (t_input) *t_input = elapsed_us(t_stage);
 
     // 2. Run
-    gettimeofday(&t_stage, nullptr);
+    if (t_run) gettimeofday(&t_stage, nullptr);
     ret = rknn_run(ctx->rknn_ctx, nullptr);
     if (ret < 0) { fprintf(stderr, "[detect] rknn_run %d\n", ret); return -1; }
-    long t_run_us = elapsed_us(t_stage);
+    if (t_run) *t_run = elapsed_us(t_stage);
 
     // 3. Get output as FP32
-    gettimeofday(&t_stage, nullptr);
+    if (t_output) gettimeofday(&t_stage, nullptr);
     int n_out = ctx->io_num.n_output;
     rknn_output outputs[n_out];
     memset(outputs, 0, sizeof(outputs));
     for (int i = 0; i < n_out; i++) { outputs[i].index = i; outputs[i].want_float = 1; }
     ret = rknn_outputs_get(ctx->rknn_ctx, n_out, outputs, nullptr);
     if (ret < 0) { fprintf(stderr, "[detect] rknn_outputs_get %d\n", ret); return -1; }
-    long t_output_us = elapsed_us(t_stage);
+    if (t_output) *t_output = elapsed_us(t_stage);
 
     // 4. Parse output
     // 支持两种格式：
     // - 单输出: [1, 5, N] 或 [1, N, 5] - x,y,w,h,conf 合并
     // - 双输出: boxes=[1,4,N], scores=[1,1,N] - YOLOv8 标准格式
-    gettimeofday(&t_stage, nullptr);
+    if (t_post) gettimeofday(&t_stage, nullptr);
 
     std::vector<detection> cands;
 
@@ -202,32 +201,13 @@ int detect_run(rknn_app_context_t* ctx,
                 sup[j] = true;
         }
     }
-    long t_post_us = elapsed_us(t_stage);
+    if (t_post) *t_post = elapsed_us(t_stage);
 
     // 7. Release
-    gettimeofday(&t_stage, nullptr);
-    rknn_outputs_release(ctx->rknn_ctx, n_out, outputs);
-    long t_release_us = elapsed_us(t_stage);
-
-    long t_total = elapsed_us(t_start);
-
-    // Export timing outputs if requested
-    if (t_input)  *t_input  = t_input_us;
-    if (t_run)    *t_run    = t_run_us;
-    if (t_output) *t_output = t_output_us;
-    if (t_post)   *t_post   = t_post_us;
-    if (t_release) *t_release = t_release_us;
-
-    // Print timing breakdown - always print for debugging
-    // printf("[detect] total=%.1fms  in=%.1f run=%.1f out=%.1f post=%.1f rel=%.1f  cands=%d nms=%d\n",
-    //         t_total / 1000.0f,
-    //         t_input_us / 1000.0f,
-    //         t_run_us / 1000.0f,
-    //         t_output_us / 1000.0f,
-    //         t_post_us / 1000.0f,
-    //         t_release_us / 1000.0f,
-    //         (int)cands.size(), (int)dets.size());
-    fflush(stdout);
+    if (t_release) gettimeofday(&t_stage, nullptr);
+    ret = rknn_outputs_release(ctx->rknn_ctx, n_out, outputs);
+    if (ret < 0) { fprintf(stderr, "[detect] rknn_outputs_release %d\n", ret); return -1; }
+    if (t_release) *t_release = elapsed_us(t_stage);
 
     return (int)dets.size();
 }
