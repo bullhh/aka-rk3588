@@ -2,6 +2,8 @@
 
 import os
 from pathlib import Path
+import select
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +12,41 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DualPickLauncherTests(unittest.TestCase):
+    def test_ci_streams_logs_before_publisher_exit_and_preserves_failure(self):
+        implementations = {
+            Path(path).resolve()
+            for name in ('awk', 'mawk', 'gawk', 'busybox')
+            if (path := shutil.which(name))
+        }
+        self.assertTrue(implementations, 'an awk implementation is required')
+        for implementation in sorted(implementations):
+            with self.subTest(awk=str(implementation)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / 'awk').symlink_to(implementation)
+                checker = root / 'run_dual_pick_ci_once.sh'
+                checker.write_text((ROOT / checker.name).read_text())
+                publisher = root / 'run_dual_pick.sh'
+                # The producer cannot finish until its first line is observed.
+                # A checker buffering input therefore fails without timing races
+                # between periodically generated lines.
+                publisher.write_text(
+                    '#!/bin/sh\nprintf "LIVE_OUTPUT\\n"\nread -r release\nexit 7\n')
+                publisher.chmod(0o755)
+                env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'])
+                with subprocess.Popen(
+                    ['sh', str(checker), '--min-fps', '28'], env=env,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                ) as process:
+                    try:
+                        readable, _, _ = select.select([process.stdout], [], [], 3)
+                        first = os.read(process.stdout.fileno(), 4096) if readable else b''
+                    finally:
+                        remaining, errors = process.communicate(b'continue\n', timeout=5)
+                self.assertIn(b'LIVE_OUTPUT\n', first,
+                              f'checker held output until producer exit: {errors!r}')
+                self.assertEqual(process.returncode, 7, errors)
+                self.assertNotIn(b'DUAL_PICK_CI_CHECK_PASS', first + remaining)
+
     def launch(self, linux, ci=True, status=0, args=(), complete=True,
                fps='30', reported_threshold=None, windows=2, duration='62000', perf='pass',
                control=True, control_session='17', control_status='ok', final=True, checks='31', cleanup='1',

@@ -18,6 +18,12 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" >/dev/null 2>&1 && pwd -P)
 _AKA_DUAL_PICK_CI_ONCE=1
 _AKA_DUAL_PICK_CI_MIN_FPS=$2
 export _AKA_DUAL_PICK_CI_ONCE _AKA_DUAL_PICK_CI_MIN_FPS
+# mawk buffers pipe input even when each printed record calls fflush().
+# Enable line-by-line input for mawk; retain portable options for other awks.
+case "$(awk -W version 2>&1)" in
+    mawk\ *) set -- -W interactive ;;
+    *) set -- ;;
+esac
 # Preserve the application's status across the POSIX pipeline without pipefail
 # or temporary files. Only publisher stdout/stderr enters this checker; guest
 # Zephyr UART output is deliberately not part of the acceptance contract.
@@ -25,7 +31,7 @@ set +e
 {
     "${SCRIPT_DIR}/run_dual_pick.sh"
     printf '\nDUAL_PICK_PROCESS_EXIT status=%d\n' "$?"
-} 2>&1 | awk -v minimum="${_AKA_DUAL_PICK_CI_MIN_FPS}" '
+} 2>&1 | awk "$@" -v minimum="${_AKA_DUAL_PICK_CI_MIN_FPS}" '
 function field(key, i, pair) {
     for (i = 2; i <= NF; i++) {
         split($i, pair, "=")
