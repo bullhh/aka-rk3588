@@ -37,6 +37,11 @@ if(BUILD_TESTING)
     )
     add_test(NAME ft232_tty_selection COMMAND ft232_tty_selection_test)
   endif()
+
+  # Static/build-gate regression for the AArch64 cross link contract: the empty
+  # stub scheme and unresolved-symbol linker flags must never come back.
+  add_test(NAME cross_link_policy
+      COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cross_link_policy_test.py)
 endif()
 
 # ── Log level ─────────────────────────────────────────────────────────────────
@@ -145,6 +150,23 @@ if(NATIVE_BUILD)
 
 else()
   # ── Cross-compile on PC ────────────────────────────────────────────────────
+  # The published AArch64 binary must link the real target runtime libraries.
+  # The former "empty stub .so" + --unresolved-symbols=ignore-all scheme is
+  # forbidden: it produced a binary whose uvc_* calls had no dynamic relocation
+  # and jumped through an unresolved PLT entry (SIGILL) in UvcCapture::open.
+  #
+  # TARGET_RUNTIME_LIB_DIR points at a directory holding the real AArch64
+  # libuvc.so, libusb-1.0.so and libturbojpeg.so taken from the target rootfs
+  # (Ubuntu 22.04 / Jammy). Configuring without it still works so the three host
+  # test targets can be built, but building `tennis` then fails through the
+  # guard target below instead of emitting a broken binary.
+  set(TARGET_RUNTIME_LIB_DIR "" CACHE PATH
+      "Directory with real AArch64 libuvc.so, libusb-1.0.so and libturbojpeg.so for the cross build")
+
+  set(TARGET_UVC_LIB     "${TARGET_RUNTIME_LIB_DIR}/libuvc.so")
+  set(TARGET_USB_LIB     "${TARGET_RUNTIME_LIB_DIR}/libusb-1.0.so")
+  set(TARGET_JPEG_LIB    "${TARGET_RUNTIME_LIB_DIR}/libturbojpeg.so")
+
   set(LIBJPEG_DIR       ${3RD}/jpeg_turbo)
   set(LIBJPEG_INCLUDES  ${LIBJPEG_DIR}/include)
   set(LIBJPEG           "")
@@ -172,34 +194,34 @@ else()
       ${RKNPU2_SRC}
   )
 
-  # Generate empty stub .so so the linker can resolve -luvc etc.
-  foreach(STUBLIB uvc usb-1.0 turbojpeg)
-      set(STUB_SRC ${CMAKE_CURRENT_BINARY_DIR}/stub_${STUBLIB}.c)
-      set(STUB_SO  ${CMAKE_CURRENT_BINARY_DIR}/lib${STUBLIB}.so)
-      file(WRITE ${STUB_SRC} "/* stub */\n")
-      add_custom_command(
-          OUTPUT  ${STUB_SO}
-          COMMAND ${CMAKE_C_COMPILER} -shared -fPIC -o ${STUB_SO} ${STUB_SRC}
-          DEPENDS ${STUB_SRC}
-          COMMENT "Generating stub lib${STUBLIB}.so"
-      )
-      list(APPEND STUB_SO_LIST ${STUB_SO})
-  endforeach()
-  add_custom_target(stub_libs ALL DEPENDS ${STUB_SO_LIST})
-  add_dependencies(tennis stub_libs)
-
-  target_link_options(tennis PRIVATE
-      -Wl,--allow-shlib-undefined
-      -Wl,--unresolved-symbols=ignore-all
-      -L${CMAKE_CURRENT_BINARY_DIR}
+  # Build-time guard: a missing/incomplete TARGET_RUNTIME_LIB_DIR fails loudly
+  # here, before the linker could ever produce an unresolved binary. Only
+  # `tennis` depends on it, so the host test targets stay buildable without the
+  # cross runtime directory.
+  add_custom_target(tennis_requires_target_runtime_libs
+      COMMAND ${CMAKE_COMMAND}
+              "-DTARGET_RUNTIME_LIB_DIR=${TARGET_RUNTIME_LIB_DIR}"
+              -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/require_target_runtime_libs.cmake"
+      COMMENT "Checking the real AArch64 runtime libraries for the cross build"
+      VERBATIM
   )
+  add_dependencies(tennis tennis_requires_target_runtime_libs)
 
+  # Link the real AArch64 libraries by absolute path. Recording the library
+  # SONAME keeps the final DT_NEEDED entries (libuvc.so.0, libusb-1.0.so.0,
+  # libturbojpeg.so.0) satisfiable by the Jammy runtime libraries shipped with
+  # the target rootfs. No host x86 library can satisfy these absolute paths.
+  # libusb-1.0.so depends on libudev.so.1; -rpath-link resolves that transitive
+  # dependency from the same directory without an explicit DT_NEEDED entry.
+  target_link_options(tennis PRIVATE
+      -Wl,-rpath-link,${TARGET_RUNTIME_LIB_DIR}
+  )
   target_link_libraries(tennis
       imageutils fileutils imagedrawing
       ${LIBRKNNRT}
-      -Wl,--no-as-needed
-      -luvc -lusb-1.0 -lturbojpeg
-      -Wl,--as-needed
+      ${TARGET_UVC_LIB}
+      ${TARGET_USB_LIB}
+      ${TARGET_JPEG_LIB}
       -lpthread -ldl -lm
   )
 endif()

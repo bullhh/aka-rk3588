@@ -228,34 +228,85 @@ cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
 
 ## 10. 构建与宿主回归
 
+### 10.1 板卡原生构建
+
 板卡具备原生构建依赖时，可以运行：
 
 ```sh
 ./build_rk3588.sh -b Release -l WARN
 ```
 
+aarch64 原生构建通过系统 `pkg-config` 解析 `libuvc`、`libusb-1.0`、
+`libturbojpeg`，不需要交叉运行库目录。
+
 如果目标板不具备构建依赖，运行包应由外部构建/资产流程部署，本文不展开逐文件
 搬运或系统库 workaround。
 
+### 10.2 Jammy 交叉构建（PC → AArch64）
+
+在 x86/非 aarch64 宿主上交叉构建 `tennis` 时，必须提供来自目标 rootfs 的真实
+AArch64 运行库目录，其中至少包含：
+
+```text
+libuvc.so  libusb-1.0.so  libturbojpeg.so  libudev.so.1
+```
+
+这些是 Ubuntu 22.04（Jammy）aarch64 的库文件：`libuvc0`、`libusb-1.0-0`、
+`libturbojpeg0`、`libudev1` 提供运行库，对应 `-dev` 包提供 `.so` 名字（`libudev.so.1`
+本身就带 SONAME，来自 `libudev1`）。构建示例：
+
+```sh
+AKA_RK3588_CROSS_LIB_DIR=/path/to/jammy-aarch64-libs \
+  ./build_rk3588.sh -b Release -l WARN
+
+# 等价写法
+./build_rk3588.sh -b Release -l WARN -L /path/to/jammy-aarch64-libs
+```
+
+脚本在任何 `cmake` 调用之前校验该目录和所需文件；缺少目录或文件时直接失败并说明
+原因，不会退回“生成空 stub”的方案。CMake 侧同样有构建期 guard：交叉配置缺少
+`TARGET_RUNTIME_LIB_DIR` 时仍可配置并单独构建三个宿主测试目标，但只要真正构建
+`tennis` 就会给出明确错误，绝不产出未解析符号的可执行文件。
+
+链接使用 `libuvc`/`libusb-1.0`/`libturbojpeg` 这三个真实库的绝对路径，最终 `DT_NEEDED` 是库自身的 SONAME
+（`libuvc.so.0`、`libusb-1.0.so.0`、`libturbojpeg.so.0`），由板卡上随包的
+Jammy 运行库满足；不会链接 x86 宿主库，架构不匹配会在链接期以
+`file in wrong format` 报错。
+
+`libudev.so.1` 是 `libusb-1.0.so` 的传递依赖：链接器通过 `-rpath-link` 指向同一个
+库目录来解析它，因此它必须存在于该目录，但不作为 `tennis` 的显式 `DT_NEEDED`。
+缺失它时链接器会正确报错，这也是该目录的强制校验项之一。
+
+安全门禁（禁止回退）：
+
+- 交叉路径禁止生成空 `libuvc`/`libusb`/`libturbojpeg` stub，禁止 `stub_libs` 目标。
+- 禁止 `--allow-shlib-undefined` 和 `--unresolved-symbols=ignore-all`；发布构建不允许
+  任何未解析符号。
+- 空 stub 方案会使 `uvc_*` 调用没有动态重定位，`UvcCapture::open` 经未解析 PLT 跳到
+  UDF 触发 SIGILL，因此已彻底移除，不得以任何形式恢复。
+
+### 10.3 x86 Linux 宿主测试
+
 x86 Linux 宿主只应显式构建 virtual 测试目标。不要直接构建默认目标，因为默认目标
 包含 AArch64 的 `tennis`，会尝试链接仓库中的 AArch64 `librknnrt.so` 并出现
-`file in wrong format`：
+`file in wrong format`。构建这三个宿主测试目标不需要交叉运行库目录：
 
 ```sh
 cmake -S . -B /tmp/aka-vision-usb-tests -DBUILD_TESTING=ON
 cmake --build /tmp/aka-vision-usb-tests \
   --target ftdi_protocol_test ft232_tty_selection_test
 ctest --test-dir /tmp/aka-vision-usb-tests \
-  -R '^(vision_usb_ci_launcher|ftdi_protocol|ft232_tty_selection)$' \
+  -R '^(vision_usb_ci_launcher|ftdi_protocol|ft232_tty_selection|cross_link_policy)$' \
   --output-on-failure
 ```
 
-`vision_usb_ci_launcher` 是直接运行的 Python 启动器契约测试，不需要单独构建可执行
-目标；`ftdi_protocol_test` 和 `ft232_tty_selection_test` 是宿主可执行测试。
-`ft232_tty_selection_test` 只在 Linux 主机上配置。宿主测试只验证协议、选择、判定和
-启动器契约，不能替代板卡上的真实 UVC、NPU、FT232R 和三种客户机验收。
-`ftdi_protocol_test` 还会断言回环指令为 PING 且绝不等于 WRITE，并覆盖“raw libusb
-serial 不可读时允许进入 TTY 严格选择”的回退策略。
+`vision_usb_ci_launcher` 和 `cross_link_policy` 是直接运行的 Python 契约测试，不需要
+单独构建可执行目标；`ftdi_protocol_test` 和 `ft232_tty_selection_test` 是宿主可执行
+测试。`ft232_tty_selection_test` 只在 Linux 主机上配置。宿主测试只验证协议、选择、
+判定、启动器契约和交叉链接策略，不能替代板卡上的真实 UVC、NPU、FT232R 和三种客户机
+验收。`ftdi_protocol_test` 还会断言回环指令为 PING 且绝不等于 WRITE，并覆盖“raw
+libusb serial 不可读时允许进入 TTY 严格选择”的回退策略；`cross_link_policy` 断言
+CMake 交叉路径不再包含空 stub 或 unresolved 选项，并要求交叉库目录缺失时构建失败。
 
 ## 11. 覆盖边界
 
@@ -279,3 +330,5 @@ serial 不可读时允许进入 TTY 严格选择”的回退策略。
 | `usb/ft232_tty.cpp` | sysfs 精确映射到 `/dev/ttyUSBx` 的 termios 回退 |
 | `usb/loopback_transport.hpp` | 两种 FT232R transport 的统一接口 |
 | `CMakeLists.txt` | virtual `tennis` 目标与三个宿主测试目标/测试 |
+| `cmake/require_target_runtime_libs.cmake` | 交叉构建真实 AArch64 运行库构建期 guard |
+| `tests/cross_link_policy_test.py` | 交叉链接策略回归（禁止空 stub / unresolved 选项） |
