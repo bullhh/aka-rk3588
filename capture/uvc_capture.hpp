@@ -21,6 +21,7 @@ public:
     ~UvcCapture();
 
     // Open device at zero-based index with requested format.
+    // Selection is by index only; no VID/PID identity is read or claimed.
     // Returns 0 on success, -1 on failure.
     int open(int device_index = 0,
              int width = 640,

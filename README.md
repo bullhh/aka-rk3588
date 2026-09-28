@@ -1,429 +1,281 @@
-# aka-rk3588 网球机器人
+# aka-rk3588 virtual 分支：UVC / RKNN / FT232R 回环 CI
 
-这是运行在 RK3588/Orange Pi 上的 C++ 用户态程序，用于摄像头采集、RKNN YOLOv8 网球识别、桶识别、底盘控制和机械臂控制。
+本文说明 aka-rk3588 的 `virtual` 分支 CI。该分支面向**没有机械臂和车轮**的
+OrangePi 5 Plus：用真实 UVC 摄像头、真实 RKNN YOLO 推理和 FT232R TXD/RXD
+物理回环，替代原机器人 CI 中的执行器部分。文档描述长期有效的实现、接口和判定
+契约，不记录某次调试过程或现场流水账。
 
-当前工程同时保留两套硬件路径：
+## 1. 这是测什么
 
-- 旧 aka-rk3588：差速底盘 + ZP10D 机械臂。
-- 当前 LeKiwi/Feetech：三轮全向底盘 + STS3215 机械臂。
+`virtual` CI 验证以下两件事能在同一块板、同一时间段内真实并发运行：
 
-当前 Orange Pi 设备使用 LeKiwi/Feetech 路径：
+1. 摄像头到 NPU 的完整视觉链路：UVC MJPEG 采集、JPEG 解码、letterbox、RKNN
+   YOLO `detect_run` 推理，以及持续吞吐。
+2. USB 到 FT232R 的物理回环链路：FT232R 自身 TXD/RXD 短接后，按固定节拍发送
+   测试帧并逐字节比较回显。
 
-```text
-Feetech 总线：/dev/ttyACM0
-机械臂电机：1-6
-底盘电机：7-9
-默认模型：models/tennis.rknn
-校准文件：config/lekiwi_calibration.json
-抓取调参文件：config/lekiwi_pick_config.txt
-```
+CI 不进入 LeKiwi 状态机，不初始化或驱动机械臂和车轮，也不打开机械臂串口
+`/dev/ttyS6`。涉及的三条检查如下：
 
-完整中文说明书见：
+| CI 文件 | check id | 板卡配置 | 环境 |
+| --- | --- | --- | --- |
+| `.github/ci/checks/starry.toml` | `test-orangepi-5-plus-robot-native-starryos` | `test-suit/starryos/board-orangepi-5-plus/robot-flow/board-orangepi-5-plus-robot.toml` | 原生 StarryOS |
+| `.github/ci/checks/axvisor.toml` | `test-orangepi-5-plus-robot-axvisor-starryos-guest` | `test-suit/axvisor/normal/board-orangepi-5-plus/robot-starry/smoke/board-orangepi-5-plus-robot-starry.toml` | AxVisor + StarryOS guest |
+| `.github/ci/checks/axvisor.toml` | `test-orangepi-5-plus-robot-axvisor-linux-guest` | `test-suit/axvisor/normal/board-orangepi-5-plus/robot-linux/smoke/board-orangepi-5-plus-robot-linux.toml` | AxVisor + Linux guest |
 
-```text
-docs/lekiwi_user_manual.md
-```
+上表中的 `.github/ci/...` 与 `test-suit/...` 都属于相邻的 **tgoskits** 仓库，
+不是本 aka-rk3588 仓库内的文件；本仓库提供板卡上运行的 `aka-rk3588-virtual`
+应用和启动器，board/VM 配置在 tgoskits 侧维护。
 
-## 编译
+三条检查共用固定运行目录 `/home/orangepi/robot-ci/aka-rk3588-virtual` 和同一个应用
+入口，但各自有独立的 board/VM 配置。
 
-在 Orange Pi 上执行：
+## 2. virtual 分支边界
 
-```bash
-cd /home/orangepi/robot/aka-rk3588
-PKG_CONFIG_PATH=/home/orangepi/miniforge3/envs/rknn/lib/pkgconfig \
-LD_LIBRARY_PATH=/home/orangepi/miniforge3/envs/rknn/lib:$LD_LIBRARY_PATH \
-./build_rk3588.sh -b Release -l INFO
-```
+本分支不含真实机械控制代码、命令或后端：`build/tennis` 只保留
+`vision-usb-ci` 子命令，源码中不包含机械臂/车轮驱动、Feetech 总线、LeKiwi
+状态机、真实控制配置或旧机器人 CLI。因此本分支无法驱动机械臂和车轮，也不为
+真实控制提供兼容或回退路径。
 
-## 视觉单独测试
+| 维度 | virtual CI |
+| --- | --- |
+| 视觉 / NPU / 性能 | 覆盖 UVC MJPEG、JPEG 解码、RKNN YOLO 推理和吞吐 |
+| 机械臂 / 车轮 | 不初始化、不驱动、无真实控制代码 |
+| `/dev/ttyS6` | 不打开 |
+| 并发 USB 负载 | FT232R TXD/RXD 物理回环，只验证 USB/串口收发和字节完整性 |
+| 重试 | 无重试，首个回环错误立即失败 |
 
-该命令只启动摄像头和识别，不初始化底盘和机械臂：
+FT232R 回环不是控制器模拟，也不是舵机应答或机械动作验证。回环帧即使原样返回，
+也只证明发送、接收和字节比较通过，不能证明控制器理解命令、伺服器回复、轨迹或
+机械臂/车轮最终动作正确。
 
-```bash
-./run_vision_once.sh
-./run_vision_once.sh models/tennis.rknn 0
-```
+真实机器人后续必须使用独立的真实分支或发布包；本 virtual 分支不保留真实控制
+入口、旧启动脚本或机械操作文档。
 
-输出文件：
+## 3. 硬件与运行前置
 
-```text
-capture.jpg
-result.jpg
-```
+- OrangePi 5 Plus 板卡，运行目标系统（原生 StarryOS 或 AxVisor guest）。
+- 真实 UVC 摄像头，应用只按 `UVC_INDEX` 选择设备；当前 `UvcCapture` 不读取
+  VID/PID，日志和文档不声明具体相机型号或 USB 身份。
+- 一个 0403:6001 FT232R 适配器，TXD 与 RXD 短接构成物理回环；多适配器时用 `FT232_SERIAL` 或 `--ftdi-serial` 指定序列号，代码不硬编码现有序列号。
+- `models/tennis.rknn` 模型文件。
+- 可运行的 `build/tennis`，以及 `libuvc`、`libusb`、`libturbojpeg`、`librknnrt` 等运行时库；TTY transport 使用内核 `ftdi_sio` 和 termios，不依赖 libftdi。
+- CI 固定应用目录：`/home/orangepi/robot-ci/aka-rk3588-virtual`。
 
-## Feetech 总线测试
+完整部署、版本目录和板卡资产由人工发布/板卡资产管理负责；CI 不自动部署。本文
+只给出最少构建和运行约定，不展开发布流水线。
 
-```bash
-./build/tennis test-feetech /dev/ttyACM0 scan
-./build/tennis test-feetech /dev/ttyACM0 read
-./build/tennis test-feetech /dev/ttyACM0 torque-off
-```
-
-Linux/Starry 共用 rootfs 验证时优先使用 `auto`，程序会先尝试 userspace libusb
-CDC 后端，失败后再回退到 `/dev/ttyACM0`：
-
-```bash
-./build/tennis test-feetech auto scan
-./build/tennis test-new-arm auto calib-check
-```
-
-用途：
-
-- `scan`：扫描 1-9 号电机是否在线。
-- `read`：读取电机当前位置、电压、温度。
-- `torque-off`：关闭扭矩，便于手动移动机械臂。
-
-## 底盘测试
-
-每个动作会短暂执行，然后自动停止：
-
-```bash
-./build/tennis test-base /dev/ttyACM0 forward 0
-./build/tennis test-base /dev/ttyACM0 backward 0
-./build/tennis test-base /dev/ttyACM0 left 0
-./build/tennis test-base /dev/ttyACM0 right 0
-./build/tennis test-base /dev/ttyACM0 rotate-left 0
-./build/tennis test-base /dev/ttyACM0 rotate-right 0
-./build/tennis test-base /dev/ttyACM0 stop
-```
-
-## 机械臂校准
-
-第一次使用或更换机械臂结构后需要校准：
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 calibrate
-```
-
-校准流程会要求操作者把所有机械臂关节依次转到安全两端。程序记录每个关节的 `range_min/range_max`，并写入：
+## 4. 执行链路
 
 ```text
-config/lekiwi_calibration.json
+run_vision_usb_ci_once.sh 28.0
+  -> build/tennis vision-usb-ci models/tennis.rknn 28.0 0
+     -> FT232R select/open
+     -> RKNN model init
+     -> UVC open + 15-frame warmup
+     -> 同一个回环 worker 与视觉并发执行两个 >= 10s 窗口
+        -> UVC MJPEG -> JPEG 解码/letterbox -> detect_run
+        -> FT232R 测试帧发送 + 回显逐字节比较
+     -> worker stop，读取两个窗口的最终统计
+     -> UVC pause/resume，并确认能拿到新帧
+     -> cleanup
+     -> [VISION_USB_CI] APPLICATION_PASS
+  -> 启动器复核字段和进程 exit 0
+  -> [VISION_USB_CI] RESULT=PASS attempts=1
 ```
 
-检查校准文件：
+启动顺序是 FT232R 设备选择/打开、RKNN 模型初始化、UVC 打开和 15 帧预热。两个
+窗口依次运行：窗口 1 结束不会停止或重启回环线程，窗口 2 继续使用同一个 worker；
+只有两窗都结束或提前失败退出后，才停止一次 worker 并读取两窗最终统计。
 
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 calib-check
-```
-
-如果没有有效校准文件，机械臂命令和完整 LeKiwi 闭环会拒绝运行。
-
-## 机械臂测试
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 pos
-./build/tennis test-new-arm /dev/ttyACM0 grab
-./build/tennis test-new-arm /dev/ttyACM0 ik-pick
-./build/tennis test-new-arm /dev/ttyACM0 ik-put
-./build/tennis test-new-arm /dev/ttyACM0 release
-./build/tennis test-new-arm /dev/ttyACM0 show
-./build/tennis test-new-arm /dev/ttyACM0 torque-off
-```
-
-用途：
-
-- `pos`：移动到初始/待机姿态。
-- `grab`：执行旧的语义抓取动作。
-- `ik-pick`：执行当前闭环使用的逆运动学抓取序列，用于单独调试抓球位置。
-- `ik-put`：执行高位悬停、慢速下降、放球、抬升和收臂的完整放球序列。
-- `release`：打开夹爪放球。
-- `show`：抬起展示姿态。
-- `torque-off`：关闭机械臂扭矩。
-
-夹爪单独测试：
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 set arm_gripper 60
-./build/tennis test-new-arm /dev/ttyACM0 set arm_gripper 0
-```
-
-当前实测：
-
-```text
-arm_gripper 60：打开
-arm_gripper 0：完全关闭
-```
-
-## 抓取调参
-
-抓取参数文件：
-
-```text
-config/lekiwi_pick_config.txt
-```
-
-修改该文件后不需要重新编译，重新执行命令即可生效。
-
-完整演示“寻找并靠近桶 → 停车 → 机械臂放球 → 撤离”一次后自动退出：
-
-```bash
-./run_bucket_place_demo.sh
-```
-
-演示模式不经过找球和抓球，启动时保留夹爪当前位置，并先平滑进入 CARRY。夹爪内
-有球时会实际释放球；首次调试应取出球，空载确认停车距离和机械臂轨迹。
-
-推荐先单独测试机械臂抓取：
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 ik-pick
-```
+## 5. FT232R 的两种 transport
 
-放球必须分阶段确认，确认前两步不会碰桶后再执行完整循环：
+同一个 `build/tennis` 支持两种传输，实际使用哪一种以 `DEVICE` 日志中的
+`transport=` 为准：
 
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 config-check
-./build/tennis test-new-arm /dev/ttyACM0 task carry
-./build/tennis test-new-arm /dev/ttyACM0 task place-approach
-./build/tennis test-new-arm /dev/ttyACM0 task place-release
-./build/tennis test-new-arm /dev/ttyACM0 task place-cycle
-```
+| transport | 使用位置 | 实现路径 | 覆盖内容 |
+| --- | --- | --- | --- |
+| `usb` | StarryOS root shell、Linux root | libusb 厂商控制请求 + bulk 端点 | USB host/usbfs、内核驱动 detach/claim/release |
+| `tty` | Linux guest | 通过 sysfs 精确映射到该 0403:6001 设备的 `/dev/ttyUSBx`，使用 termios | Linux `ftdi_sio` TTY 路径 |
 
-`place_id1_deg`～`place_id5_deg` 是精确的桶内最终释放姿态；其中 ID2、ID3、ID4
-可直接按实机需要设置，不再经过 IK 偏移换算，也不会影响固定的高位接近姿态。
-前后距离优先通过 `bucket_stop_size_px` 调整；桶中心精调使用
-`bucket_center_tolerance_px`，距离和中心连续满足 `bucket_stable_frames` 帧后才放球。
-机械臂、夹爪以及接近球和桶的速度统一由 `motion_speed_level` 控制：1调试、2稳定、
-3快速、4极速。当前4档对应普通机械臂50°/s、HOME 25°/s、夹爪60°/s；
-接近球远速65、接近桶远速70，目标附近分别降到20和25。
-控制器按50ms绝对周期和真实时间S曲线运行，即使通信延迟，单周期命令仍限幅，不会
-突然加速追赶。启动时从未知姿态回HOME仍保持25°/s安全上限。
+默认 `auto`：先尝试 `usb`；如果设备存在但 raw libusb 打开被拒、transport 不
+支持、发生其他可回退错误，或者 libusb 因权限无法读取 serial 而无法完成序列号
+选择，才尝试 `tty`。`tty` 后端会重新从 sysfs 读取 serial 并再次做严格选择，
+因此“读不到 serial”不会被误判成多设备歧义。真正的多设备无选择器、可读 serial
+重复、可读 serial 匹配不到，或 sysfs serial 不可读时直接失败，不会猜测设备。
+显式 `FTDI_TRANSPORT=usb` 永不回退，失败即失败。两种 transport 都使用 1 Mbps、
+8N1、无流控。
 
-常用调参规则：
+Linux CI 场景中，UVC 的 libusb 节点通常需要更高权限，由 board 配置以足够权限启动，
+并强制 `FTDI_TRANSPORT=tty` 来实际覆盖 `ftdi_sio` 路径。Starry 后续必须在相邻
+tgoskits 仓库的 board 配置中显式设置 `FTDI_TRANSPORT=usb`，当前尚未落实；本仓库
+只保证显式 `usb` 严格不回退。本文不记录密码或某台板的权限处理细节。
 
-- 夹爪伸过球：减小 `grab_forward_offset_cm`。
-- 夹爪够不到球：增大 `grab_forward_offset_cm`。
-- 夹爪偏左/偏右：调整 `grab_lateral_offset_cm`，正数向左、负数向右。
-- 夹爪过低/过高：调整 `grab_height_offset_cm`，正数升高、负数降低。
-- 夹球俯仰角不合适：每次调整 `grab_pitch_offset_deg` 约 `5` 度。
-- 位置偏移单位为厘米，每次建议只改 `0.5`。
-- `PICK_BALL done` 日志会同时打印夹爪反馈和抓取后视觉复核。只有 `gripper_hold=yes` 且 `ball_visible=no` 时，最终 `holding` 才会是 `yes`。
+`tty` 路径只接受 `/dev/ttyUSB` 加数字的节点，拒绝 `/dev/ttyS6`、`/dev/ttyACM0`
+和其它非 FT232R 串口。
 
-完整闭环中，如果第一次没有夹住，程序不会去找桶。抓取动作结束后会重新取一帧图像：如果球仍在视野内且仍处于 `BALL_READY` 区域，立即使用下一组小偏移再次抓取；如果球还在视野内但不再满足抓取条件，则先回到追球状态重新视觉对准。
+## 6. 回环帧与通过含义
 
-```text
-(0, 0)
-(-0.5, 0)
-(-1.0, 0)
-(-1.5, 0)
-(-2.0, 0)
-(+1.0, 0)
-(0, -1.0)
-(0, +1.0)
-(-1.5, -1.0)
-(-1.5, +1.0)
-```
+回环负载使用 Feetech 命令帧形状，包含帧头、ID、长度、指令、自增序号、变化
+nonce、payload 长度、payload 和校验和。指令固定为无写入副作用的 PING（`0x01`），
+绝不使用 WRITE（`0x03`），也不构造 broadcast WRITE。每帧发送后读取回显并要求
+逐字节完全一致；短包、长包、内容不一致、序号回退或超前都会被分类为错误。首个
+回环错误会立即终止工作线程和本次运行，不做隐式重试。
 
-这两个数依次是前后、高度偏移，单位也是厘米。如果某次偏移夹住了球，程序会把
-成功的偏移写回 `config/lekiwi_pick_config.txt`。如果所有偏移都失败，程序会重新
-从第一组参数开始追球和对准。
+如果适配器误接到真实 Feetech 总线，PING 最多让真实舵机返回非回显响应，严格逐字节
+比较会失败并终止本次运行；它不会改寄存器或触发动作。
 
-底盘停车距离由 `ball_stop_size_px` 控制：
+在 `transport=usb` 时，应用会剥离 FTDI 每个 USB IN 包前面的 2 个状态字节；只含
+状态字节的包不产生数据。`transport=tty` 时这些状态字节由 Linux `ftdi_sio` 处理，
+应用只比较 TTY 数据流。
 
-- 值越大，车停得越近。
-- 值越小，车停得越远。
-- 当前默认 `155`，实机成功夹球时检测尺寸为 `154`。
+该机制只验证通信链路和字节完整性；即使某帧回显成功，也不能把它当成舵机成功或
+运动闭环成功。
 
-进入抓取前还会检查球中心误差：
+## 7. PASS / FAIL 契约
 
-```text
-ball_stop_tolerance_px = 5
-ball_center_tolerance_px = 30
-ball_stable_frames = 2
-```
+应用使用两个窗口和一个并发回环 worker。每个窗口必须：
 
-当前距离窗口是 `155±5`，即球框尺寸在 `150～160` 像素内；球心左右误差还需
-不超过 `30` 像素，并连续满足 `2` 个检测帧才进入夹球。
+- 有效时长 `>= 10s`；
+- `processed > 0`；
+- 成功回环次数 `>= 160`；
+- 回环错误数为 0。
 
-各档速度、减速距离和等待时间由程序成组选择。程序根据检测尺寸的增长速度预测停车
-位置，进入减速区后从远速连续降到近速；停止后再低速修正，因此高速档不会直接用高速
-冲到目标。接近球时，左右偏差进入微调区后会
-保持向前并通过左右轮差速修正；中心误差退出更小的滞回窗口后才恢复直行，避免检测
-结果在阈值附近波动时反复出现“前进、停下原地转、再前进”。
-StarryOS 真实 RKNN 闭环稳态约 `16fps`，检测中心会随架空车轮和画面抖动在
-`+/-30px` 左右变化；如果窗口太窄，会一直输出 `BALL_FINE_LEFT/RIGHT`
-或 `BALL_BACKWARD`，日志里反复出现 `BALL_READY ... ready=0` 但无法进入夹球。
+两窗合计还必须满足：
 
-夹球腕部角度由 `grab_pitch_offset_deg` 控制。如果夹爪明显倾斜，可以每次改 `5` 观察效果：
+- 聚合有效 FPS `>= min_fps`；三条 CI 固定使用 `28.0`；
+- 成功回环总数 `>= 320`；
+- 回环错误总数为 0；
+- UVC pause/resume 成功，并且 resume 后拿到新帧；
+- RKNN 模型释放和设备清理结果满足要求；
+- 应用进程退出码为 0。
 
-```text
-grab_pitch_offset_deg = -5
-grab_pitch_offset_deg = 5
-```
+应用只有在全部条件满足后才输出唯一的
+`[VISION_USB_CI] APPLICATION_PASS ...`。启动器只在看到恰好一条带合法 `transport`
+的 `DEVICE`、恰好两个 `PERF_WINDOW` 和两个 `LOOPBACK_WINDOW` 统计、恰好一条自洽的
+`APPLICATION_PASS`、且进程 exit 0 时，才输出
+`[VISION_USB_CI] RESULT=PASS attempts=1`。否则输出
+`[VISION_USB_CI] RESULT=FAIL attempts=1` 并返回非零。
 
-更详细说明见：
+当前不做“必须检测到球”或固定图片语义断言：`detect_run` 返回负数才算推理失败，
+返回 0 个检测框可以通过。本 CI 验证推理执行和吞吐，不验证模型准确率。
 
-```text
-docs/lekiwi_cpp_closed_loop_migration.md
-```
+## 8. 三种测试环境
 
-## 完整闭环
+三条 board 配置默认使用普通 `OrangePi-5-Plus`；下面的 xtask 命令直接使用配置中的普通板标识，不需要额外板型参数。
 
-当前 Linux/Starry 联调阶段建议把机器人架起来，默认只验证“视觉检测到球并输出
-LeKiwi 追球轮速控制”，不会继续进入抓球和找桶流程：
+| 环境 | 客户机 / 内核 | 说明 |
+| --- | --- | --- |
+| 原生 Starry | 直接运行 StarryOS | root shell 下使用 `transport=usb`，执行同一入口和契约 |
+| AxVisor + Starry | 当前工作区构建的 SMP1 StarryOS guest | guest 配置为 `test-suit/axvisor/normal/board-orangepi-5-plus/robot-starry/guest.toml`，`image_location = "memory"` |
+| AxVisor + Linux | `test-suit/axvisor/normal/board-orangepi-5-plus/robot-linux/linux-smp1-emmc.toml` | `image_location = "fs"`，`kernel_path = "/guest/linux/orangepi-5-plus-6.1.99"`，guest 根由 cmdline `root=/dev/mmcblk0p2` 指定，ramdisk 为 `/guest/linux/initramfs.cpio` |
 
-```bash
-./run_lekiwi_test.sh
-```
+上表中的 `/guest/linux/orangepi-5-plus-6.1.99` 是 AxVisor **宿主文件系统**上的
+内核资产，不是 guest 根分区；`root=/dev/mmcblk0p2` 选择的是 guest 的 eMMC 根分区。
+运行 AxVisor + Linux 用例前，必须由统一资产流程部署该镜像，并校验哈希、真实版本
+和内核模块 ABI。README 只描述这个前置契约，不把该路径视为已经验证通过。
 
-`run_lekiwi_loop.sh` 目前保留为兼容入口，等价于 `run_lekiwi_test.sh`。
+## 9. 最小运行方式
 
-脚本行为：
-
-- Linux 下会先执行 `build_rk3588.sh` 编译，再运行 `build/tennis`。
-- StarryOS 下不会编译，只检查并运行共享 rootfs 中已有的 `build/tennis`。
-  判断 StarryOS 时同时检查 `uname -s` 和 `hostname=starry`，避免误走编译路径。
-- StarryOS 下如果 `build/tennis` 不存在，需要先回到 Linux 编译。
-- 脚本使用 `/bin/sh` 语法，避免 StarryOS 没有 bash 或 `/usr/bin/env` 时无法执行。
-
-StarryOS 下直接等价于：
-
-```bash
-./build/tennis models/tennis.rknn auto 0 auto lekiwi --stop-after-chase
-```
-
-Linux 下默认使用 RK3588 三核 NPU。当前 StarryOS 三核 RKNPU 路径能跑完但输出
-bbox 会塌到右下角，例如 `bbox=(640,480,*,0)`，会导致车一直 `BALL_RIGHT` 原地转。
-StarryOS 下应先使用单核稳定模式：
-
-```bash
-RKNN_CORE_MASK=0 ./build/tennis models/tennis.rknn auto 0 auto lekiwi --stop-after-chase
-```
-
-`run_lekiwi_loop.sh` 在 StarryOS 下会自动设置 `RKNN_CORE_MASK=0`。Linux 真实检测路径
-不需要该变量，默认仍为三核 `RKNN_NPU_CORE_0_1_2`。
-
-达到连续追球确认条件后会主动停车退出，并打印：
-
-```text
-[SAFETY] STOP_AFTER_CHASE ...
-```
-
-如果要恢复完整闭环，可以显式关闭脚本的安全退出：
-
-```bash
-./run_lekiwi_full.sh
-```
-
-完整流程会要求输入 `RUN_FULL_LEKIWI` 确认，避免误触。如果确实需要无人值守启动，
-当前调试阶段已去掉交互确认，执行 `./run_lekiwi_full.sh` 会直接进入完整流程。
-
-完整闭环关键日志：
-
-```bash
-./build/tennis models/tennis.rknn /dev/ttyACM0 0 /dev/ttyACM0 lekiwi
-```
-
-```text
-LEKIWI_CHASE      追球视觉伺服
--> PICK_BALL      开始抓球
-PICK_BALL done    抓取完成并打印夹爪反馈和抓取后视觉复核
-grab failed       抓取失败，立即重试或回到追球重新对准
--> FIND_BUCKET    抓取成功，开始找桶
--> PUT_BALL       桶到位，开始放球
-PUT_BALL done     放球完成，回到追球
-```
-
-完整闭环会在夹球成功后进入找桶流程；无桶或线束可能被车体拖拽时不要运行完整闭环。
-
-## Linux/Starry 统一入口说明
-
-当前程序为 Feetech 总线提供两个后端：
-
-```text
-TTY 后端:
-  直接打开 /dev/ttyACM0 等串口设备。
-
-userspace libusb CDC 后端:
-  通过 libusb 枚举 CDC ACM 设备，claim control/data interface，
-  发送 SET_LINE_CODING 和 SET_CONTROL_LINE_STATE，再用 bulk IN/OUT
-  传输 Feetech 协议包。
-```
-
-设备参数为 `auto` 时，选择顺序是：
-
-```text
-1. userspace libusb CDC
-2. /dev/ttyACM0 TTY
-```
-
-`auto`、`usb`、`libusb`、`cdc` 会默认打印 FeetechBus 枚举和后端选择日志。
-需要强制在普通 TTY 路径也打印调试信息时，可以设置：
-
-```bash
-LEKIWI_USB_DEBUG=1 ./build/tennis test-feetech /dev/ttyACM0 scan
-```
-
-## 原始位置姿态调试
-
-原始位置姿态只用于排查硬件方向、关节范围或临时验证姿态，不作为最终自动抓取策略。
-
-保存姿态：
-
-```bash
-./build/tennis test-feetech /dev/ttyACM0 torque-off
-./build/tennis test-new-arm /dev/ttyACM0 pose-save home
-```
-
-回放姿态：
-
-```bash
-./build/tennis test-new-arm /dev/ttyACM0 pose-run home
-./build/tennis test-new-arm /dev/ttyACM0 pose-list
-```
-
-姿态文件：
-
-```text
-config/lekiwi_arm_poses.txt
-```
-
-## 旧平台命令
-
-旧 aka-rk3588 差速底盘和 ZP10D 机械臂仍保留：
-
-```bash
-./build/tennis test-arm /dev/ttyUSB1 pos
-./build/tennis test-arm /dev/ttyUSB1 grab
-./build/tennis test-motor /dev/ttyS3 speed=30
-./build/tennis models/tennis.rknn /dev/ttyS3 0 /dev/ttyUSB1
-```
-
-## Robot CI 车轮反馈验收
-
-`run_robot_ci_once.sh` 仍要求真实摄像头、NPU、机械臂和车轮；不要求现场有球。
-底盘必须架空。性能计时开始前，以低速正、反向驱动三只轮子，每个方向都必须
-连续三次读取到三轮同向非零速度；各轮询阶段期限为 2 秒。
-预检中的每次停止以及完整流程结束时，必须连续三次读到三轮速度均为零。
-通信失败、轮子不响应、方向错误、停车失败或取消请求都会导致本次尝试失败。
-流程中的轮子命令错误会保留，不能被之后成功发送的停车命令清除。
-
-程序仅在推理、两个性能窗口、机械臂流程、三轮反馈、最终停车和模型释放全部成功后，
-输出最终 `PERF_SUMMARY` 与唯一的 `APPLICATION_PASS`，随后正常退出。
-启动器要求这个最终成功结果和零退出码，核对结果携带的完成数量与配置门槛；
-中间性能窗口、轮子反馈或错误文字均不作为整次流程成功的依据。
-缺少最终结果的旧程序不能通过新版启动器。反馈检查位于两个性能窗口之外，
-FPS 仍衡量真实采集、推理和原有控制路径，门槛由调用参数设置。
-硬件模式保留一次重试，最终成功仍须完成一整次合格流程。
-
-可单独运行 `./build/tennis test-base auto verify` 检查轮子响应和停车。
-宿主故障回归复用 CMake/CTest：
+板卡上使用固定应用目录和启动器：
 
 ```sh
-cmake -S . -B /tmp/aka-wheel-tests -DBUILD_TESTING=ON
-cmake --build /tmp/aka-wheel-tests --target wheel_feedback_driver feetech_motion_policy_test
-ctest --test-dir /tmp/aka-wheel-tests --output-on-failure
+cd /home/orangepi/robot-ci/aka-rk3588-virtual
+./run_vision_usb_ci_once.sh 28.0
 ```
 
-串口测试夹具覆盖正常响应、单轮/全部不转、方向错误、停车失败、反馈超时和
-命令失败后的错误保留；它验证真实串口协议与判定代码，实体响应仍需板卡验收。
+Linux guest 手工复现应使用对应 board 配置规定的权限，并强制 `FTDI_TRANSPORT=tty`
+以覆盖 `ftdi_sio` 路径，不能用默认 `auto` 替代该覆盖路径；原生 Starry 后续必须
+在相邻 tgoskits 仓库的 board 配置中显式设置 `FTDI_TRANSPORT=usb`，当前尚未落实；
+本仓库的显式 `usb` 模式只保证不回退。
 
-CI 运行目录固定为 `/home/orangepi/robot-ci/aka-rk3588/`，目录内同时放置
-`build/tennis`、`run_robot_ci_once.sh`、`lib/`、`models/` 和本板 `config/`。
-源码提交号及产物哈希记录在 `SOURCE` 文件中，不放入运行目录名称。
-部署必须持有板卡租约，先备份当前目录，再整体切换完整暂存目录，避免不同版本的
-程序和启动器混用。启动器对外的 `RESULT=PASS/FAIL` 保持兼容，旧、新 board 配置
-都使用固定路径；更早的 `/home/orangepi/robot/aka-rk3588` 保留不变。
-性能基线约为摄像头上限 30 FPS，当前配置门槛为 28 FPS；反馈预检和最终清理不计入
-两个约 10 秒的性能窗口。应同时记录实际门槛、窗口帧数、最终成功结果和尝试次数。
+直接调用应用：
+
+```sh
+./build/tennis vision-usb-ci models/tennis.rknn 28.0 0
+./build/tennis vision-usb-ci models/tennis.rknn 28.0 0 \
+  --ftdi-serial your_adapter_serial --ftdi-transport tty
+```
+
+`run_vision_usb_ci_once.sh` 只接受一个最小 FPS 参数，其它输入通过环境变量传入：
+
+| 变量 | 作用 | 默认 |
+| --- | --- | --- |
+| `MODEL_PATH` | RKNN 模型路径 | `models/tennis.rknn` |
+| `UVC_INDEX` | UVC 设备索引 | `0` |
+| `FT232_SERIAL` | 多适配器时的 FT232R 序列号选择器 | 空 |
+| `FTDI_TRANSPORT` | FT232R transport：`usb`、`tty`、`auto` | `auto` |
+| `RKNN_CORE_MASK` | NPU 核掩码 | `0` |
+| `VISION_USB_CI_CADENCE_HZ` | 回环 worker 节拍 | `20` |
+| `VISION_USB_CI_MIN_TX` | 每窗最少成功回环数，只能提高到固定下限 160 之上 | `160` |
+
+仓库三条 CI 的 xtask 命令如下。AxVisor + StarryOS 必须先按当前配置构建 SMP1
+guest，再运行板卡用例：
+
+```sh
+# 原生 Starry
+cargo xtask starry test board --board orangepi-5-plus-robot
+
+# AxVisor + StarryOS：先构建当前工作区的 SMP1 guest
+cargo xtask starry build \
+  --config test-suit/starryos/board-orangepi-5-plus/robot-flow/build-aarch64-unknown-none-softfloat.toml \
+  --smp 1
+cargo xtask axvisor test board --board orangepi-5-plus-robot-starry
+
+# AxVisor + Linux
+cargo xtask axvisor test board --board orangepi-5-plus-robot-linux
+```
+
+## 10. 构建与宿主回归
+
+板卡具备原生构建依赖时，可以运行：
+
+```sh
+./build_rk3588.sh -b Release -l WARN
+```
+
+如果目标板不具备构建依赖，运行包应由外部构建/资产流程部署，本文不展开逐文件
+搬运或系统库 workaround。
+
+x86 Linux 宿主只应显式构建 virtual 测试目标。不要直接构建默认目标，因为默认目标
+包含 AArch64 的 `tennis`，会尝试链接仓库中的 AArch64 `librknnrt.so` 并出现
+`file in wrong format`：
+
+```sh
+cmake -S . -B /tmp/aka-vision-usb-tests -DBUILD_TESTING=ON
+cmake --build /tmp/aka-vision-usb-tests \
+  --target ftdi_protocol_test ft232_tty_selection_test
+ctest --test-dir /tmp/aka-vision-usb-tests \
+  -R '^(vision_usb_ci_launcher|ftdi_protocol|ft232_tty_selection)$' \
+  --output-on-failure
+```
+
+`vision_usb_ci_launcher` 是直接运行的 Python 启动器契约测试，不需要单独构建可执行
+目标；`ftdi_protocol_test` 和 `ft232_tty_selection_test` 是宿主可执行测试。
+`ft232_tty_selection_test` 只在 Linux 主机上配置。宿主测试只验证协议、选择、判定和
+启动器契约，不能替代板卡上的真实 UVC、NPU、FT232R 和三种客户机验收。
+`ftdi_protocol_test` 还会断言回环指令为 PING 且绝不等于 WRITE，并覆盖“raw libusb
+serial 不可读时允许进入 TTY 严格选择”的回退策略。
+
+## 11. 覆盖边界
+
+- 不覆盖模型准确率、固定图片语义、捡球/放球、机械臂/车轮动作、舵机反馈、急停或长时间稳定性。
+- `usb` 和 `tty` 是互不替代的覆盖路径：`usb` 不证明 Linux `ftdi_sio`，`tty` 不证明 raw libusb 路径。
+- FT232R 缺失、TXD/RXD 未短接、线缆断开、设备歧义或非 FT232R 串口都不能产生有效 PASS。
+- AxVisor + Linux 的 `/guest/linux/orangepi-5-plus-6.1.99` 必须由统一资产流程部署并
+  校验文件、版本和模块 ABI 后才有意义。
+- 真实机器人闭环必须使用独立的真实分支/发布包，在已校准且安全停机的实机上另行
+  测试，不属于本 virtual 分支或这三条 CI。
+
+## 12. 关键文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `vision_usb_ci.cpp` / `vision_usb_ci.hpp` | 双窗口视觉 + FT232R 回环工作负载和最终判定 |
+| `run_vision_usb_ci_once.sh` | 板卡 CI 启动器和 `APPLICATION_PASS`/`RESULT` 契约 |
+| `tennis.cpp` | 最小 CLI，只分发 `vision-usb-ci` |
+| `usb/ftdi_protocol.cpp` | Feetech/回环帧、状态字节剥离、设备选择、回环判定 |
+| `usb/ft232_loopback.cpp` | libusb 厂商控制/bulk transport 和回环 worker |
+| `usb/ft232_tty.cpp` | sysfs 精确映射到 `/dev/ttyUSBx` 的 termios 回退 |
+| `usb/loopback_transport.hpp` | 两种 FT232R transport 的统一接口 |
+| `CMakeLists.txt` | virtual `tennis` 目标与三个宿主测试目标/测试 |

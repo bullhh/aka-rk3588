@@ -12,26 +12,31 @@ if(BUILD_TESTING)
   if(NOT PYTHON3_EXECUTABLE)
     message(FATAL_ERROR "python3 is required for launcher tests")
   endif()
-  add_test(NAME robot_ci_launcher
-      COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/robot_ci_launcher_test.py)
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(TEST_LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
-    add_executable(wheel_feedback_driver tests/wheel_feedback_driver.cpp
-        robot/omni_base.cpp feetech/feetech_bus.cpp)
-    target_include_directories(wheel_feedback_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    target_link_libraries(wheel_feedback_driver PkgConfig::TEST_LIBUSB)
-    add_test(NAME wheel_feedback COMMAND ${PYTHON3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/wheel_feedback_test.py $<TARGET_FILE:wheel_feedback_driver>)
-  endif()
-  add_executable(feetech_motion_policy_test
-      tests/feetech_motion_policy_test.cpp
-      robot/feetech_motion_policy.cpp
+  add_test(NAME vision_usb_ci_launcher
+      COMMAND ${PYTHON3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/vision_usb_ci_launcher_test.py)
+
+  # Pure FT232R framing/status/selection/verdict logic: no libusb, no hardware.
+  add_executable(ftdi_protocol_test
+      tests/ftdi_protocol_test.cpp
+      usb/ftdi_protocol.cpp
   )
-  target_include_directories(feetech_motion_policy_test PRIVATE
+  target_include_directories(ftdi_protocol_test PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}
   )
-  add_test(NAME feetech_motion_policy COMMAND feetech_motion_policy_test)
+  add_test(NAME ftdi_protocol COMMAND ftdi_protocol_test)
+
+  # Linux-only: exercises the FT232R TTY transport selection without hardware.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(ft232_tty_selection_test
+        tests/ft232_tty_selection_test.cpp
+        usb/ft232_tty.cpp
+        usb/ftdi_protocol.cpp
+    )
+    target_include_directories(ft232_tty_selection_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    add_test(NAME ft232_tty_selection COMMAND ft232_tty_selection_test)
+  endif()
 endif()
 
 # ── Log level ─────────────────────────────────────────────────────────────────
@@ -108,13 +113,8 @@ if(NATIVE_BUILD)
 
   add_executable(tennis
       tennis.cpp
-      test_cmds.cpp
-      arm/arm.cpp
-      feetech/feetech_bus.cpp
-      motor/motor.cpp motor/pwm_motor_driver.cpp motor/uart_motor_driver.cpp
-      robot/omni_base.cpp robot/feetech_arm.cpp robot/lekiwi_calibration.cpp robot/lekiwi_arm_poses.cpp
-      robot/feetech_motion_policy.cpp
-      robot/lekiwi_task_controller.cpp
+      vision_usb_ci.cpp
+      usb/ftdi_protocol.cpp usb/ft232_loopback.cpp usb/ft232_tty.cpp
       capture/uvc_capture.cpp
       detect/detect.cpp
       ${RKNPU2_SRC}
@@ -165,13 +165,8 @@ else()
 
   add_executable(tennis
       tennis.cpp
-      test_cmds.cpp
-      arm/arm.cpp
-      feetech/feetech_bus.cpp
-      motor/motor.cpp motor/pwm_motor_driver.cpp motor/uart_motor_driver.cpp
-      robot/omni_base.cpp robot/feetech_arm.cpp robot/lekiwi_calibration.cpp robot/lekiwi_arm_poses.cpp
-      robot/feetech_motion_policy.cpp
-      robot/lekiwi_task_controller.cpp
+      vision_usb_ci.cpp
+      usb/ftdi_protocol.cpp usb/ft232_loopback.cpp usb/ft232_tty.cpp
       capture/uvc_capture.cpp
       detect/detect.cpp
       ${RKNPU2_SRC}

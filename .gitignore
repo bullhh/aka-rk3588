@@ -4,3 +4,7 @@
 # Vision test output
 /capture.jpg
 /result.jpg
+
+# Python cache
+__pycache__/
+*.pyc
