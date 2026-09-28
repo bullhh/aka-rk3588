@@ -18,13 +18,20 @@ COMPLETE = """[ROBOT_CI] WHEEL_CHECK=PASS wheels=3 directions=2 stopped=1
 
 
 class RobotCiLauncherTest(unittest.TestCase):
-    def launch(self, output=COMPLETE, status=0, minimum="28"):
+    def launch(self, output=COMPLETE, status=0, minimum="28", feetech_dev="auto",
+               usb_ids=("0ac8:0346", "1a86:55d3")):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "build").mkdir()
             (root / "models").mkdir()
             (root / "bin").mkdir()
-            for name, text in [("lsusb", "echo attached"), ("sleep", ":")]:
+            lsusb_cases = "".join(
+                f'    *{device}*) echo "ID {device}" ;;\n' for device in usb_ids
+            )
+            for name, text in [
+                ("lsusb", 'case "$*" in\n' + lsusb_cases + "    *) exit 1 ;;\nesac"),
+                ("sleep", ":"),
+            ]:
                 helper = root / "bin" / name
                 helper.write_text("#!/bin/sh\n" + text + "\n")
                 helper.chmod(0o755)
@@ -32,10 +39,15 @@ class RobotCiLauncherTest(unittest.TestCase):
             script = root / "run_robot_ci_once.sh"
             script.write_bytes((ROOT / script.name).read_bytes())
             binary = root / "build/tennis"
-            binary.write_text('#!/bin/sh\n[ "$1" = test-new-arm ] && exit 0\ncat <<\'OUTPUT\'\n' + output +
-                              "OUTPUT\nexit " + str(status) + "\n")
+            binary.write_text(
+                '#!/bin/sh\n'
+                'printf \'APP_ARGS:%s\\n\' "$*"\n'
+                '[ "$1" = test-new-arm ] && exit 0\n'
+                "cat <<'OUTPUT'\n" + output + "OUTPUT\nexit " + str(status) + "\n"
+            )
             binary.chmod(0o755)
-            env = dict(os.environ, FEETECH_DEV="auto", PATH=str(root / "bin") + os.pathsep + os.environ["PATH"])
+            env = dict(os.environ, FEETECH_DEV=feetech_dev,
+                       PATH=str(root / "bin") + os.pathsep + os.environ["PATH"])
             env.pop("MODEL_PATH", None)
             return subprocess.run(["sh", str(script), minimum], env=env,
                                   capture_output=True, text=True, timeout=5)
@@ -80,6 +92,31 @@ class RobotCiLauncherTest(unittest.TestCase):
                 result = self.launch(minimum=minimum)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("PERF_BEGIN", result.stdout)
+
+    def test_uart6_mode_skips_cdc_precheck_and_enters_application(self):
+        result = self.launch(feetech_dev="/dev/ttyS6", usb_ids=("0ac8:0346",))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("TRANSPORT=uart6", result.stdout)
+        self.assertIn("FEETECH_DEV=/dev/ttyS6", result.stdout)
+        self.assertIn("RESULT=PASS attempts=1", result.stdout)
+        app_lines = [line for line in result.stdout.splitlines()
+                     if line.startswith("APP_ARGS:")]
+        self.assertTrue(app_lines, result.stdout)
+        self.assertEqual(app_lines[0].split().count("/dev/ttyS6"), 2)
+
+    def test_uart6_mode_still_requires_uvc_camera_precheck(self):
+        result = self.launch(feetech_dev="/dev/ttyS6", usb_ids=())
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("ATTEMPT_BEGIN", result.stdout)
+        self.assertIn("reason=uvc_camera_missing", result.stdout)
+
+    def test_usb_modes_still_require_cdc_controller_precheck(self):
+        for feetech_dev in ("auto", "usb", "/dev/ttyACM0"):
+            with self.subTest(feetech_dev=feetech_dev):
+                result = self.launch(feetech_dev=feetech_dev, usb_ids=("0ac8:0346",))
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertNotIn("ATTEMPT_BEGIN", result.stdout)
+                self.assertIn("reason=usb_device_missing", result.stdout)
 
 
 if __name__ == "__main__":

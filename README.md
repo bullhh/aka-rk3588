@@ -393,6 +393,28 @@ config/lekiwi_arm_poses.txt
 ## Robot CI 车轮反馈验收
 
 `run_robot_ci_once.sh` 仍要求真实摄像头、NPU、机械臂和车轮；不要求现场有球。
+
+### 单客户机 UART6 控制路径
+
+在 AxVisor 单客户机配置中，UART6 `/serial@feb90000` 由唯一的 Starry 或 Linux
+客户机独占，guest 侧设备节点为 `/dev/ttyS6`。双客户机配置中 UART6 由 Zephyr 独占，
+两者互斥；双客户机感知客户机不要运行这条真实控制路径。
+
+单客户机真实机器人检查使用：
+
+```sh
+FEETECH_DEV=/dev/ttyS6 ./run_robot_ci_once.sh 28.0
+```
+
+必须显式设置 `FEETECH_DEV=/dev/ttyS6`，启动器不会根据设备节点自动猜测 UART6。
+UART6 模式仍保留真实 UVC 摄像头预检，但跳过只针对 USB CDC 控制器 `1a86:55d3`
+的预检；未显式选择 UART6 的 `auto`、`usb`、`ttyACM` 等路径保持原有摄像头和
+CDC 预检。`/dev/ttyS6` 的存在和类型由应用 `open` 判断，启动器不调用 `stty`，
+避免与真实控制链路竞争。应用程序和失败后的 carry 恢复使用同一个 `FEETECH_DEV`。
+
+`virtual` 分支的 `run_vision_usb_ci_once.sh` 以及 FT232 回环只验证 UVC、RKNN
+和 USB 回环，不是这条真实机械臂/车轮控制路径。
+
 底盘必须架空。性能计时开始前，以低速正、反向驱动三只轮子，每个方向都必须
 连续三次读取到三轮同向非零速度；各轮询阶段期限为 2 秒。
 预检中的每次停止以及完整流程结束时，必须连续三次读到三轮速度均为零。

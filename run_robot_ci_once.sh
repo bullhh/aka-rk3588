@@ -14,6 +14,18 @@ export LD_LIBRARY_PATH
 MIN_FPS="${1:-12.5}"
 MODEL_PATH="${MODEL_PATH:-${SCRIPT_DIR}/models/tennis.rknn}"
 FEETECH_DEV="${FEETECH_DEV:-auto}"
+case "${FEETECH_DEV}" in
+    /dev/ttyS6)
+        FEETECH_TRANSPORT="uart6"
+        REQUIRE_FEETECH_CDC=0
+        FEETECH_CHECK="application_open"
+        ;;
+    *)
+        FEETECH_TRANSPORT="usb"
+        REQUIRE_FEETECH_CDC=1
+        FEETECH_CHECK="usb_cdc:1a86:55d3"
+        ;;
+esac
 UVC_INDEX="${UVC_INDEX:-0}"
 if [ "$#" -gt 1 ] || ! awk -v value="${MIN_FPS}" 'BEGIN {
     exit !(value ~ /^[0-9]+([.][0-9][0-9]?)?$/ && value + 0 > 0 && value + 0 <= 1000)
@@ -21,6 +33,11 @@ if [ "$#" -gt 1 ] || ! awk -v value="${MIN_FPS}" 'BEGIN {
     echo "[ROBOT_CI] RESULT=FAIL reason=invalid_min_fps"
     exit 2
 fi
+
+# Only an explicit /dev/ttyS6 selects UART6. Starry exposes that node through
+# devfs; the application's open is the authoritative device check, so no
+# shell-side test/stty probe is added.
+echo "[ROBOT_CI] TRANSPORT=${FEETECH_TRANSPORT} FEETECH_DEV=${FEETECH_DEV} FEETECH_CHECK=${FEETECH_CHECK}"
 
 if [ ! -x "${SCRIPT_DIR}/build/tennis" ]; then
     echo "[ROBOT_CI] RESULT=FAIL reason=missing_binary path=${SCRIPT_DIR}/build/tennis"
@@ -38,6 +55,7 @@ export RKNN_CORE_MASK AKA_STATE_LOG_INTERVAL_MS
 export ROBOT_CI_MIN_FPS
 
 wait_for_usb() {
+    require_feetech_cdc="$1"
     timeout="${LEKIWI_USB_ENUM_TIMEOUT:-20}"
     elapsed=0
     checked_ids=0
@@ -49,9 +67,17 @@ wait_for_usb() {
             camera_ready=0
             feetech_ready=0
             lsusb -d 0ac8:0346 2>/dev/null | grep -q . && camera_ready=1
-            lsusb -d 1a86:55d3 2>/dev/null | grep -q . && feetech_ready=1
+            if [ "${require_feetech_cdc}" -eq 1 ]; then
+                lsusb -d 1a86:55d3 2>/dev/null | grep -q . && feetech_ready=1
+            else
+                feetech_ready=1
+            fi
             if [ "${camera_ready}" -eq 1 ] && [ "${feetech_ready}" -eq 1 ]; then
-                echo "[ROBOT_CI] USB_READY camera=0ac8:0346 feetech=1a86:55d3 elapsed_s=${elapsed}"
+                if [ "${require_feetech_cdc}" -eq 1 ]; then
+                    echo "[ROBOT_CI] USB_READY camera=0ac8:0346 feetech=1a86:55d3 elapsed_s=${elapsed}"
+                else
+                    echo "[ROBOT_CI] USB_READY camera=0ac8:0346 feetech=uart6 device=${FEETECH_DEV} elapsed_s=${elapsed}"
+                fi
                 return 0
             fi
             sleep 1
@@ -70,7 +96,11 @@ wait_for_usb() {
         elapsed=$((elapsed + 1))
     done
     if [ "${checked_ids}" -eq 1 ]; then
-        echo "[ROBOT_CI] RESULT=FAIL reason=usb_device_missing camera=${camera_ready} feetech=${feetech_ready} elapsed_s=${elapsed}"
+        if [ "${require_feetech_cdc}" -eq 1 ]; then
+            echo "[ROBOT_CI] RESULT=FAIL reason=usb_device_missing camera=${camera_ready} feetech=${feetech_ready} elapsed_s=${elapsed}"
+        else
+            echo "[ROBOT_CI] RESULT=FAIL reason=uvc_camera_missing camera=${camera_ready} feetech=uart6 elapsed_s=${elapsed}"
+        fi
         return 1
     fi
     echo "[ROBOT_CI] RESULT=FAIL reason=usb_enumeration_timeout elapsed_s=${elapsed}"
@@ -155,7 +185,7 @@ END {
     return "${app_status}"
 }
 
-wait_for_usb || exit 1
+wait_for_usb "${REQUIRE_FEETECH_CDC}" || exit 1
 
 if run_attempt 1; then
     echo "[ROBOT_CI] RESULT=PASS attempts=1"
