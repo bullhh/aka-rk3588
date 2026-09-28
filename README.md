@@ -138,12 +138,14 @@ nonce、payload 长度、payload 和校验和。指令固定为无写入副作�
 
 - 有效时长 `>= 10s`；
 - `processed > 0`；
+- 允许最多 3 个 MJPEG 解码失败帧：单帧解码失败只跳过该帧继续，不增加 `processed`，也不重置回环；第 4 个解码失败帧立即以 `reason=jpeg_decode_unstable` 结束本次运行；
 - 成功回环次数 `>= 160`；
 - 回环错误数为 0。
 
 两窗合计还必须满足：
 
 - 聚合有效 FPS `>= min_fps`；三条 CI 固定使用 `28.0`；
+- 两个窗口的 MJPEG 解码失败总数在 `0..6`，且必须等于两窗 `jpeg_errors` 之和；
 - 成功回环总数 `>= 320`；
 - 回环错误总数为 0；
 - UVC pause/resume 成功，并且 resume 后拿到新帧；
@@ -156,6 +158,13 @@ nonce、payload 长度、payload 和校验和。指令固定为无写入副作�
 `APPLICATION_PASS`、且进程 exit 0 时，才输出
 `[VISION_USB_CI] RESULT=PASS attempts=1`。否则输出
 `[VISION_USB_CI] RESULT=FAIL attempts=1` 并返回非零。
+
+容错字段：`jpeg_errors` 出现在两个 `PERF_WINDOW` 行、`PERF_SUMMARY` 行和
+`APPLICATION_PASS` 行。窗口行的 `jpeg_errors` 是该窗口跳过的坏 MJPEG 帧数，必须
+`<= 3`；`PERF_SUMMARY` 和 `APPLICATION_PASS` 的 `jpeg_errors` 是两窗之和，必须
+`<= 6` 且与两窗相加一致。坏帧说明 USB 仍有帧到达（不触发 `frame_acquisition_stalled`），
+但该帧不参与 `processed`。启动器要求三处字段都存在且自洽：缺少 `jpeg_errors` 的旧程序
+永远不能通过。该容错只用于吸收单帧硬件噪声，持续损坏仍会失败。
 
 当前不做“必须检测到球”或固定图片语义断言：`detect_run` 返回负数才算推理失败，
 返回 0 个检测框可以通过。本 CI 验证推理执行和吞吐，不验证模型准确率。

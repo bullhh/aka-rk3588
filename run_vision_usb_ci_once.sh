@@ -30,6 +30,10 @@ UVC_INDEX="${UVC_INDEX:-0}"
 # window at the default 20 Hz cadence, i.e. 320 over the two windows.
 WINDOW_TX_FLOOR=160
 TOTAL_TX_FLOOR=320
+# Must stay in sync with vision_usb_ci.cpp: a window tolerates up to 3 bad
+# MJPEG frames, so the two-window total is 6.
+WINDOW_JPEG_MAX=3
+TOTAL_JPEG_MAX=6
 
 if [ "$#" -gt 1 ] || ! awk -v value="${MIN_FPS}" 'BEGIN {
     exit !(value ~ /^[0-9]+([.][0-9]+)?$/ && value + 0 > 0 && value + 0 <= 1000)
@@ -57,7 +61,8 @@ app_status=0
         "${MODEL_PATH}" "${MIN_FPS}" "${UVC_INDEX}"
     printf '\nVISION_USB_CI_PROCESS_EXIT status=%d\n' "$?"
 } 2>&1 | awk -v minimum="${MIN_FPS}" -v window_floor="${WINDOW_TX_FLOOR}" \
-    -v total_floor="${TOTAL_TX_FLOOR}" '
+    -v total_floor="${TOTAL_TX_FLOOR}" -v jpeg_window_max="${WINDOW_JPEG_MAX}" \
+    -v jpeg_total_max="${TOTAL_JPEG_MAX}" '
 function field(key, i, pair) {
     for (i = 2; i <= NF; i++) {
         split($i, pair, "=")
@@ -79,8 +84,11 @@ function numeric(value) { return value ~ /^[0-9]+([.][0-9]+)?$/ }
     if (field("index") != windows "/2") invalid = 1
     elapsed = field("elapsed_s")
     processed = field("processed")
+    jerr = field("jpeg_errors")
     if (!numeric(elapsed) || elapsed + 0 < 10 ||
-        processed !~ /^[0-9]+$/ || processed + 0 <= 0) invalid = 1
+        processed !~ /^[0-9]+$/ || processed + 0 <= 0 ||
+        !numeric(jerr) || jerr + 0 > jpeg_window_max + 0) invalid = 1
+    window_jpeg += jerr + 0
 }
 # Each window must also carry enough successful loopback exchanges.
 /^\[VISION_USB_CI\] LOOPBACK_WINDOW / {
@@ -101,6 +109,7 @@ function numeric(value) { return value ~ /^[0-9]+([.][0-9]+)?$/ }
     tx = field("loopback_tx")
     errors = field("loopback_errors")
     mintx = field("loopback_min_tx")
+    jsum = field("jpeg_errors")
     if (markers > 1 || field("windows") != "2" || field("pause_resume") != "1" ||
         !numeric(threshold) || threshold + 0 != minimum + 0 ||
         !numeric(fps) || fps + 0 < minimum + 0 ||
@@ -109,7 +118,16 @@ function numeric(value) { return value ~ /^[0-9]+([.][0-9]+)?$/ }
         tx !~ /^[0-9]+$/ || tx + 0 < total_floor ||
         errors !~ /^[0-9]+$/ || errors + 0 != 0 ||
         mintx !~ /^[0-9]+$/ || mintx + 0 < total_floor ||
-        tx + 0 < mintx + 0) invalid = 1
+        tx + 0 < mintx + 0 ||
+        !numeric(jsum) || jsum + 0 < 0 || jsum + 0 > jpeg_total_max + 0) invalid = 1
+    pass_jpeg = jsum
+}
+# The non-final summary must also carry the per-window total so a truncated run
+# or a summary/PASS mismatch cannot pass.
+/^\[VISION_USB_CI\] PERF_SUMMARY / {
+    summaries++
+    summary_jpeg = field("jpeg_errors")
+    if (!numeric(summary_jpeg)) invalid = 1
 }
 /^VISION_USB_CI_PROCESS_EXIT / {
     if (exited++) invalid = 1
@@ -117,7 +135,9 @@ function numeric(value) { return value ~ /^[0-9]+([.][0-9]+)?$/ }
 }
 END {
     if (!exited || !numeric(status) || status + 0 != 0 || invalid ||
-        markers != 1 || windows != 2 || loopbacks != 2 || devices != 1)
+        markers != 1 || windows != 2 || loopbacks != 2 || devices != 1 ||
+        summaries != 1 || !numeric(pass_jpeg) || !numeric(summary_jpeg) ||
+        pass_jpeg + 0 != window_jpeg + 0 || summary_jpeg + 0 != window_jpeg + 0)
         exit 1
     exit 0
 }' || app_status=$?

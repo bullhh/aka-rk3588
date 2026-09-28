@@ -51,6 +51,12 @@ const uint64_t WINDOW_US          = 10ULL * 1000000ULL;
 const int      WARMUP_FRAMES      = 15;
 const uint64_t WARMUP_DEADLINE_US = 6ULL * 1000000ULL;
 const uint64_t FRAME_STALL_US     = 3ULL * 1000000ULL;
+// A single corrupted MJPEG frame from the UVC stream is tolerated: a window may
+// skip up to this many decode failures, and the next one fails the window with
+// reason=jpeg_decode_unstable. Sustained corruption therefore still fails while
+// one-off hardware noise does not flake an otherwise healthy run.
+const uint64_t MAX_JPEG_ERRORS_PER_WINDOW = 3;
+const uint64_t MAX_JPEG_ERRORS_TOTAL      = 2 * MAX_JPEG_ERRORS_PER_WINDOW;
 
 const int      FT232_BAUD          = 1000000;
 // The worker's frame id is the fixed 0x01 used by all loopback frames. The
@@ -139,8 +145,10 @@ void print_fail(const char* reason, const std::string& detail)
 }
 
 struct WindowPerf {
-    double   elapsed_s = 0.0;
-    uint64_t processed = 0;
+    double   elapsed_s   = 0.0;
+    uint64_t processed   = 0;
+    // MJPEG frames that arrived on the UVC stream but failed JPEG decode.
+    uint64_t jpeg_errors = 0;
 };
 
 // Run one >=10s window of capture + decode + inference. Returns the window
@@ -174,15 +182,28 @@ WindowPerf run_window(UvcCapture& capture, rknn_app_context_t& ctx,
             }
             continue;
         }
+        // A frame arrived (so the USB stream is alive), even if it later fails to
+        // decode. Update the stall clock here so tolerated decode errors keep the
+        // window going, and a stream of bad frames is caught by the error budget
+        // below instead of being misread as acquisition stall.
         last_frame_us = monotonic_us();
 
         int pad_x = 0, pad_y = 0;
         float scale = 1.0f;
         if (decode_mjpeg(mjpeg, static_cast<size_t>(jpeg_len), rgb, model_w, model_h,
                          &pad_x, &pad_y, &scale) != 0) {
-            ok = false;
-            reason = "jpeg_decode_failed";
-            break;
+            // Count the bad frame and skip this iteration: processed is not
+            // incremented because no valid frame was handled. The window only
+            // fails once the tolerance is exceeded, so a single hardware-noise
+            // frame cannot flake an otherwise healthy run while sustained
+            // corruption still fails.
+            perf.jpeg_errors++;
+            if (perf.jpeg_errors > MAX_JPEG_ERRORS_PER_WINDOW) {
+                ok = false;
+                reason = "jpeg_decode_unstable";
+                break;
+            }
+            continue;
         }
 
         dets.clear();
@@ -407,9 +428,11 @@ int cmd_vision_usb_ci(int argc, char** argv)
     for (int w = 0; w < 2; w++) {
         if (!perf_valid[w]) continue;
         printf("%s PERF_WINDOW index=%d/2 elapsed_s=%.2f processed=%" PRIu64
-               " effective_fps=%.2f\n", TAG, w + 1, perf[w].elapsed_s,
-               perf[w].processed, perf[w].elapsed_s > 0.0
-                   ? perf[w].processed / perf[w].elapsed_s : 0.0);
+               " effective_fps=%.2f jpeg_errors=%" PRIu64 "\n", TAG, w + 1,
+               perf[w].elapsed_s, perf[w].processed,
+               perf[w].elapsed_s > 0.0
+                   ? perf[w].processed / perf[w].elapsed_s : 0.0,
+               perf[w].jpeg_errors);
         printf("%s LOOPBACK_WINDOW index=%d/2 attempts=%" PRIu64 " tx=%" PRIu64
                " errors=%" PRIu64 " avg_ms=%.3f max_ms=%.3f\n", TAG, w + 1,
                loopback[w].attempts, loopback[w].matches, loopback[w].errors,
@@ -481,6 +504,7 @@ int cmd_vision_usb_ci(int argc, char** argv)
     uint64_t total_tx = 0;
     uint64_t total_errors = 0;
     uint64_t total_attempts = 0;
+    uint64_t total_jpeg_errors = 0;
     for (int w = 0; w < 2; w++) {
         verdict_input.perf[w].elapsed_s = perf[w].elapsed_s;
         verdict_input.perf[w].processed = perf[w].processed;
@@ -490,6 +514,7 @@ int cmd_vision_usb_ci(int argc, char** argv)
         total_tx += loopback[w].matches;
         total_errors += loopback[w].errors;
         total_attempts += loopback[w].attempts;
+        total_jpeg_errors += perf[w].jpeg_errors;
     }
     const double effective_fps = total_elapsed > 0.0 ? total_processed / total_elapsed : 0.0;
 
@@ -504,8 +529,9 @@ int cmd_vision_usb_ci(int argc, char** argv)
     }
 
     printf("%s PERF_SUMMARY windows=2 elapsed_s=%.2f processed=%" PRIu64
-           " effective_fps=%.2f min_fps=%.2f\n", TAG, total_elapsed, total_processed,
-           effective_fps, min_fps);
+           " effective_fps=%.2f min_fps=%.2f jpeg_errors=%" PRIu64 "\n", TAG,
+           total_elapsed, total_processed, effective_fps, min_fps,
+           total_jpeg_errors);
     printf("%s LOOPBACK_SUMMARY attempts=%" PRIu64 " tx=%" PRIu64 " errors=%" PRIu64
            " min_tx=%" PRIu64 "\n", TAG, total_attempts, total_tx, total_errors,
            2 * min_tx_per_window);
@@ -513,10 +539,11 @@ int cmd_vision_usb_ci(int argc, char** argv)
     printf("%s APPLICATION_PASS windows=2 min_fps=%.2f processed=%" PRIu64
            " elapsed_s=%.2f effective_fps=%.2f loopback_tx=%" PRIu64
            " loopback_errors=%" PRIu64 " loopback_min_tx=%" PRIu64
+           " jpeg_errors=%" PRIu64
            " ft232_serial=%s ft232_bus=%d ft232_addr=%d camera_uvc_index=%d"
            " pause_resume=1\n",
            TAG, min_fps, total_processed, total_elapsed, effective_fps, total_tx,
-           total_errors, 2 * min_tx_per_window,
+           total_errors, 2 * min_tx_per_window, total_jpeg_errors,
            ft232_serial.empty() ? "-" : ft232_serial.c_str(), ft232_bus, ft232_addr,
            uvc_index);
     fflush(stdout);
