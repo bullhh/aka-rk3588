@@ -1,16 +1,27 @@
 / {
 	chosen {
-		/* AxVisor owns the physical UART2 console and turns the host-selected
-		 * UART2 into an emulated console for this virtualized guest, so Zephyr
-		 * must keep using the board's default uart2 node.  Do not list UART2 in
-		 * the guest passthrough set: only UART6 is passed through physically.
-		 */
-		zephyr,console = &uart2;
-		zephyr,shell-uart = &uart2;
+		zephyr,console = &vconsole;
+		zephyr,shell-uart = &vconsole;
 	};
 
 	aliases {
 		robot-uart = &uart6;
+	};
+
+	vconsole_clk: vconsole-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+	};
+
+	vconsole: serial@9000000 {
+		compatible = "arm,pl011";
+		reg = <0x09000000 0x1000>;
+		interrupts = <GIC_SPI 1 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
+		interrupt-names = "irq_0";
+		clocks = <&vconsole_clk>;
+		current-speed = <115200>;
+		status = "okay";
 	};
 
 	uart6: serial@feb90000 {
@@ -26,6 +37,13 @@
 		current-speed = <1000000>;
 		status = "okay";
 	};
+};
+
+/* UART2 is the physical AxVisor host console.  The virtualized controller VM
+ * must not instantiate its driver even though the base board DTS enables it.
+ */
+&uart2 {
+	status = "disabled";
 };
 
 /* The fixed control workload needs no dynamic bulk RAM.  Keep Zephyr's own
